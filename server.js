@@ -436,24 +436,34 @@ async function exchangeShortTokenForLongInstagramToken(shortAccessToken) {
 async function fetchInstagramProfile(accessToken, shortToken = null) {
   const attempts = [
     {
-      label: "versioned_user_id_fields",
-      url: `https://graph.instagram.com/${graphVersion()}/me`,
-      fields: "user_id,username,account_type,media_count",
+      label: "unversioned_basic_user_id_username",
+      url: "https://graph.instagram.com/me",
+      fields: "user_id,username",
     },
     {
-      label: "unversioned_user_id_fields",
+      label: "unversioned_basic_id_username",
+      url: "https://graph.instagram.com/me",
+      fields: "id,username",
+    },
+    {
+      label: "versioned_basic_user_id_username",
+      url: `https://graph.instagram.com/${graphVersion()}/me`,
+      fields: "user_id,username",
+    },
+    {
+      label: "versioned_basic_id_username",
+      url: `https://graph.instagram.com/${graphVersion()}/me`,
+      fields: "id,username",
+    },
+    {
+      label: "unversioned_extended",
       url: "https://graph.instagram.com/me",
       fields: "user_id,username,account_type,media_count",
     },
     {
-      label: "versioned_id_fields",
+      label: "versioned_extended",
       url: `https://graph.instagram.com/${graphVersion()}/me`,
-      fields: "id,username,account_type,media_count",
-    },
-    {
-      label: "unversioned_id_fields",
-      url: "https://graph.instagram.com/me",
-      fields: "id,username,account_type,media_count",
+      fields: "user_id,username,account_type,media_count",
     },
   ];
 
@@ -472,13 +482,18 @@ async function fetchInstagramProfile(accessToken, shortToken = null) {
       );
 
       if (!igUserId) {
-        throw new Error(`Profile fetch succeeded but Instagram user id is missing. Attempt: ${attempt.label}`);
+        throw new Error(
+          `Profile fetch succeeded but Instagram user id is missing. Attempt: ${attempt.label}`
+        );
       }
 
       return {
+        ok: true,
         profile,
         igUserId,
         attempt: attempt.label,
+        errors,
+        fallbackUsed: false,
       };
     } catch (error) {
       errors.push({
@@ -488,7 +503,28 @@ async function fetchInstagramProfile(accessToken, shortToken = null) {
     }
   }
 
-  const finalError = new Error("Failed to fetch Instagram profile.");
+  const fallbackIgUserId = String(shortToken?.user_id || "");
+
+  if (fallbackIgUserId) {
+    return {
+      ok: true,
+      profile: {
+        id: fallbackIgUserId,
+        user_id: fallbackIgUserId,
+        username: null,
+        account_type: null,
+        media_count: null,
+      },
+      igUserId: fallbackIgUserId,
+      attempt: "fallback_short_token_user_id",
+      errors,
+      fallbackUsed: true,
+    };
+  }
+
+  const finalError = new Error(
+    "Failed to fetch Instagram profile and no fallback user_id was available."
+  );
   finalError.profileFetchAttempts = errors;
   throw finalError;
 }
@@ -944,7 +980,7 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
     callbackStep = "profile_fetch";
 
     const profileResult = await fetchInstagramProfile(tokenToStore, shortToken);
-    const profile = profileResult.profile;
+    const profile = profileResult.profile || {};
     const igUserId = String(profileResult.igUserId || shortToken.user_id || "");
 
     if (!igUserId) {
@@ -986,6 +1022,21 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
       .update({ used_at: new Date().toISOString() })
       .eq("state", String(state));
 
+    if (profileResult.fallbackUsed) {
+      await addPublishLog({
+        userId: oauthState.user_id,
+        socialAccountId: savedAccount.id,
+        action: "instagram_profile_fetch_fallback_used",
+        status: "warning",
+        message:
+          "Instagram profile fetch failed. Saved account using user_id from token response.",
+        meta: {
+          fallback: "short_token_user_id",
+          attempts: profileResult.errors || [],
+        },
+      });
+    }
+
     if (tokenSource === "short_lived") {
       await addPublishLog({
         userId: oauthState.user_id,
@@ -1005,8 +1056,7 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
         socialAccountId: savedAccount.id,
         action: "instagram_long_lived_token_exchange_warning",
         status: "warning",
-        message:
-          "Long-lived token exchange succeeded after fallback method.",
+        message: "Long-lived token exchange succeeded after fallback method.",
         meta: longExchangeWarning,
       });
     }
@@ -1023,6 +1073,7 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
         accountType: savedAccount.account_type || null,
         tokenSource,
         profileFetchAttempt: profileResult.attempt,
+        profileFallbackUsed: profileResult.fallbackUsed || false,
       },
     });
 
@@ -1037,6 +1088,11 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
           savedAccount.username || igUserId
         )}</b></p>
         <p>Token type stored: <b>${escapeHtml(tokenSource)}</b></p>
+        ${
+          profileResult.fallbackUsed
+            ? `<p style="color:#b45309;"><b>Warning:</b> Username could not be fetched right now, so the account was saved using Instagram user ID. The app can refresh profile data later.</p>`
+            : ""
+        }
         ${
           tokenSource === "short_lived"
             ? `<p style="color:#b45309;"><b>Warning:</b> Long-lived token exchange failed, so the connection is temporary. Publishing may fail after about 1 hour until long-lived token exchange is fixed.</p>`
