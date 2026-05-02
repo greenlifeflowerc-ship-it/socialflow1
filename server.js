@@ -11,12 +11,15 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.use(cors({
-  origin: process.env.CORS_ORIGIN === "*" || !process.env.CORS_ORIGIN
-    ? true
-    : process.env.CORS_ORIGIN.split(",").map((v) => v.trim()),
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin:
+      process.env.CORS_ORIGIN === "*" || !process.env.CORS_ORIGIN
+        ? true
+        : process.env.CORS_ORIGIN.split(",").map((v) => v.trim()),
+    credentials: true,
+  })
+);
 
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
@@ -114,10 +117,7 @@ function decryptText(encryptedText) {
   const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), iv);
   decipher.setAuthTag(tag);
 
-  return Buffer.concat([
-    decipher.update(encrypted),
-    decipher.final(),
-  ]).toString("utf8");
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
 }
 
 function cleanErrorMessage(error) {
@@ -127,6 +127,26 @@ function cleanErrorMessage(error) {
   return JSON.stringify(error);
 }
 
+function safeErrorDetails(error) {
+  return {
+    message: cleanErrorMessage(error),
+    status: error?.status || null,
+    metaErrorCode: error?.response?.error?.code || null,
+    metaErrorType: error?.response?.error?.type || null,
+    metaErrorSubcode: error?.response?.error?.error_subcode || null,
+    metaTraceId: error?.response?.error?.fbtrace_id || null,
+  };
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function htmlPage(title, bodyHtml) {
   return `
     <!doctype html>
@@ -134,7 +154,7 @@ function htmlPage(title, bodyHtml) {
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>${title}</title>
+        <title>${escapeHtml(title)}</title>
       </head>
       <body style="font-family: Arial, sans-serif; max-width: 850px; margin: 40px auto; padding: 0 20px; line-height: 1.6;">
         ${bodyHtml}
@@ -169,6 +189,7 @@ async function fetchJson(url, options = {}) {
       const message =
         json?.error?.message ||
         json?.message ||
+        json?.raw ||
         text ||
         `HTTP ${response.status}`;
 
@@ -190,10 +211,7 @@ async function requireUser(req, res, next) {
     const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
 
     if (!token) {
-      if (
-        process.env.ALLOW_DEV_NO_AUTH === "true" &&
-        process.env.DEV_USER_ID
-      ) {
+      if (process.env.ALLOW_DEV_NO_AUTH === "true" && process.env.DEV_USER_ID) {
         req.user = {
           id: process.env.DEV_USER_ID,
           email: "dev-user@local.test",
@@ -269,7 +287,15 @@ async function getAccountForUser({ userId, accountId, includeToken = false }) {
   return data;
 }
 
-async function addPublishLog({ userId, postId = null, socialAccountId = null, action, status, message = null, meta = null }) {
+async function addPublishLog({
+  userId,
+  postId = null,
+  socialAccountId = null,
+  action,
+  status,
+  message = null,
+  meta = null,
+}) {
   try {
     const supabase = getSupabaseAdmin();
     await supabase.from("publish_logs").insert({
@@ -315,6 +341,159 @@ async function uploadBufferToCloudinary({ buffer, mimetype, originalname, userId
     stream.end(buffer);
   });
 }
+
+/* Instagram OAuth helpers */
+
+async function exchangeCodeForShortInstagramToken(code) {
+  const tokenParams = new URLSearchParams();
+  tokenParams.set("client_id", requiredEnv("INSTAGRAM_APP_ID"));
+  tokenParams.set("client_secret", requiredEnv("INSTAGRAM_APP_SECRET"));
+  tokenParams.set("grant_type", "authorization_code");
+  tokenParams.set("redirect_uri", requiredEnv("INSTAGRAM_REDIRECT_URI"));
+  tokenParams.set("code", String(code));
+
+  const shortToken = await fetchJson("https://api.instagram.com/oauth/access_token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: tokenParams,
+  });
+
+  if (!shortToken?.access_token) {
+    throw new Error("Instagram did not return a short-lived access token.");
+  }
+
+  return shortToken;
+}
+
+async function exchangeShortTokenForLongInstagramToken(shortAccessToken) {
+  const clientSecret = requiredEnv("INSTAGRAM_APP_SECRET");
+
+  const getUrl = new URL("https://graph.instagram.com/access_token");
+  getUrl.searchParams.set("grant_type", "ig_exchange_token");
+  getUrl.searchParams.set("client_secret", clientSecret);
+  getUrl.searchParams.set("access_token", shortAccessToken);
+
+  try {
+    const data = await fetchJson(getUrl.toString(), {
+      method: "GET",
+    });
+
+    if (!data?.access_token) {
+      throw new Error("Instagram long-lived token response did not include access_token.");
+    }
+
+    return {
+      ok: true,
+      method: "GET",
+      token: data,
+      warning: null,
+    };
+  } catch (getError) {
+    const postParams = new URLSearchParams();
+    postParams.set("grant_type", "ig_exchange_token");
+    postParams.set("client_secret", clientSecret);
+    postParams.set("access_token", shortAccessToken);
+
+    try {
+      const data = await fetchJson("https://graph.instagram.com/access_token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: postParams,
+      });
+
+      if (!data?.access_token) {
+        throw new Error("Instagram long-lived token POST response did not include access_token.");
+      }
+
+      return {
+        ok: true,
+        method: "POST",
+        token: data,
+        warning: {
+          getFailed: safeErrorDetails(getError),
+          fallbackUsed: "POST",
+        },
+      };
+    } catch (postError) {
+      return {
+        ok: false,
+        method: null,
+        token: null,
+        warning: {
+          getFailed: safeErrorDetails(getError),
+          postFailed: safeErrorDetails(postError),
+          fallbackUsed: "short_lived_token",
+        },
+      };
+    }
+  }
+}
+
+async function fetchInstagramProfile(accessToken, shortToken = null) {
+  const attempts = [
+    {
+      label: "versioned_user_id_fields",
+      url: `https://graph.instagram.com/${graphVersion()}/me`,
+      fields: "user_id,username,account_type,media_count",
+    },
+    {
+      label: "unversioned_user_id_fields",
+      url: "https://graph.instagram.com/me",
+      fields: "user_id,username,account_type,media_count",
+    },
+    {
+      label: "versioned_id_fields",
+      url: `https://graph.instagram.com/${graphVersion()}/me`,
+      fields: "id,username,account_type,media_count",
+    },
+    {
+      label: "unversioned_id_fields",
+      url: "https://graph.instagram.com/me",
+      fields: "id,username,account_type,media_count",
+    },
+  ];
+
+  const errors = [];
+
+  for (const attempt of attempts) {
+    try {
+      const profileUrl = new URL(attempt.url);
+      profileUrl.searchParams.set("fields", attempt.fields);
+      profileUrl.searchParams.set("access_token", accessToken);
+
+      const profile = await fetchJson(profileUrl.toString());
+
+      const igUserId = String(
+        profile.user_id || profile.id || shortToken?.user_id || ""
+      );
+
+      if (!igUserId) {
+        throw new Error(`Profile fetch succeeded but Instagram user id is missing. Attempt: ${attempt.label}`);
+      }
+
+      return {
+        profile,
+        igUserId,
+        attempt: attempt.label,
+      };
+    } catch (error) {
+      errors.push({
+        attempt: attempt.label,
+        error: safeErrorDetails(error),
+      });
+    }
+  }
+
+  const finalError = new Error("Failed to fetch Instagram profile.");
+  finalError.profileFetchAttempts = errors;
+  throw finalError;
+}
+
+/* Instagram publishing helpers */
 
 async function createInstagramContainer({ account, token, post }) {
   const baseUrl = `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/media`;
@@ -396,11 +575,7 @@ async function fetchPublishedMedia({ mediaId, token }) {
 async function publishPostById({ postId, userId = null }) {
   const supabase = getSupabaseAdmin();
 
-  let query = supabase
-    .from("scheduled_posts")
-    .select("*")
-    .eq("id", postId)
-    .single();
+  let query = supabase.from("scheduled_posts").select("*").eq("id", postId).single();
 
   if (userId) query = query.eq("user_id", userId);
 
@@ -492,7 +667,7 @@ async function publishPostById({ postId, userId = null }) {
     let mediaInfo = null;
     try {
       mediaInfo = await fetchPublishedMedia({ mediaId, token });
-    } catch (error) {
+    } catch {
       mediaInfo = null;
     }
 
@@ -548,7 +723,7 @@ async function publishPostById({ postId, userId = null }) {
       action: "publish_failed",
       status: "failed",
       message,
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
 
     throw error;
@@ -585,8 +760,7 @@ app.get("/api/config/status", (req, res) => {
       hasEnv("META_GRAPH_VERSION"),
 
     supabaseConfigured:
-      hasEnv("SUPABASE_URL") &&
-      hasEnv("SUPABASE_SERVICE_ROLE_KEY"),
+      hasEnv("SUPABASE_URL") && hasEnv("SUPABASE_SERVICE_ROLE_KEY"),
 
     cloudinaryConfigured:
       hasEnv("CLOUDINARY_CLOUD_NAME") &&
@@ -604,9 +778,10 @@ app.get("/api/config/status", (req, res) => {
 });
 
 app.get("/privacy", (req, res) => {
-  res.send(htmlPage(
-    "Privacy Policy - SocialFlow",
-    `
+  res.send(
+    htmlPage(
+      "Privacy Policy - SocialFlow",
+      `
       <h1>Privacy Policy</h1>
       <p>SocialFlow lets users connect their Instagram professional accounts only after authorization.</p>
       <p>We store connected Instagram account data, scheduled posts, uploaded media URLs, captions, publishing status, logs, comments, messages, and insights only as needed to provide the service.</p>
@@ -614,32 +789,37 @@ app.get("/privacy", (req, res) => {
       <p>Access tokens are encrypted on the backend. We do not expose tokens or server secrets to the mobile app.</p>
       <p>Users can request deletion of their account data through the data deletion page.</p>
     `
-  ));
+    )
+  );
 });
 
 app.get("/terms", (req, res) => {
-  res.send(htmlPage(
-    "Terms of Service - SocialFlow",
-    `
+  res.send(
+    htmlPage(
+      "Terms of Service - SocialFlow",
+      `
       <h1>Terms of Service</h1>
       <p>Users are responsible for all content they upload, schedule, publish, or send through SocialFlow.</p>
       <p>Users must only publish content they own or have permission to use.</p>
       <p>Users must comply with Instagram, Meta, and applicable laws and policies.</p>
       <p>SocialFlow depends on third-party APIs. Publishing, comments, messages, and insights can fail if third-party APIs reject or limit requests.</p>
     `
-  ));
+    )
+  );
 });
 
 app.get("/data-deletion", (req, res) => {
-  res.send(htmlPage(
-    "Data Deletion - SocialFlow",
-    `
+  res.send(
+    htmlPage(
+      "Data Deletion - SocialFlow",
+      `
       <h1>User Data Deletion</h1>
       <p>Users can request deletion of their account data, connected Instagram account data, scheduled posts, media URLs, publishing logs, comments, messages, and insights data.</p>
       <p>To request deletion, contact the app owner using the email associated with your account.</p>
       <p>After verification, we will delete related data unless retention is required for legal, security, or fraud-prevention reasons.</p>
     `
-  ));
+    )
+  );
 });
 
 /* Instagram OAuth */
@@ -688,35 +868,37 @@ app.get("/api/auth/instagram/start", requireUser, async (req, res) => {
 });
 
 app.get("/api/auth/instagram/callback", async (req, res) => {
-  const {
-    code,
-    state,
-    error,
-    error_reason,
-    error_description,
-  } = req.query;
+  const { code, state, error, error_reason, error_description } = req.query;
+
+  let callbackStep = "received_callback";
 
   try {
     if (error) {
-      return res.status(400).send(htmlPage(
-        "Instagram Connection Failed",
-        `
+      return res.status(400).send(
+        htmlPage(
+          "Instagram Connection Failed",
+          `
           <h1>Instagram connection failed</h1>
-          <p><b>Error:</b> ${String(error)}</p>
-          <p><b>Reason:</b> ${String(error_reason || "")}</p>
-          <p><b>Description:</b> ${String(error_description || "")}</p>
+          <p><b>Error:</b> ${escapeHtml(error)}</p>
+          <p><b>Reason:</b> ${escapeHtml(error_reason || "")}</p>
+          <p><b>Description:</b> ${escapeHtml(error_description || "")}</p>
         `
-      ));
+        )
+      );
     }
 
     if (!code || !state) {
-      return res.status(400).send(htmlPage(
-        "Instagram Connection Failed",
-        `<h1>Missing code or state.</h1>`
-      ));
+      return res.status(400).send(
+        htmlPage(
+          "Instagram Connection Failed",
+          `<h1>Missing code or state.</h1>`
+        )
+      );
     }
 
     const supabase = getSupabaseAdmin();
+
+    callbackStep = "state_validation";
 
     const { data: oauthState, error: stateError } = await supabase
       .from("oauth_states")
@@ -727,57 +909,52 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
       .single();
 
     if (stateError || !oauthState) {
-      return res.status(400).send(htmlPage(
-        "Instagram Connection Failed",
-        `<h1>Invalid or expired OAuth state.</h1>`
-      ));
+      return res.status(400).send(
+        htmlPage(
+          "Instagram Connection Failed",
+          `<h1>Invalid or expired OAuth state.</h1>`
+        )
+      );
     }
 
-    const tokenParams = new URLSearchParams();
-    tokenParams.set("client_id", requiredEnv("INSTAGRAM_APP_ID"));
-    tokenParams.set("client_secret", requiredEnv("INSTAGRAM_APP_SECRET"));
-    tokenParams.set("grant_type", "authorization_code");
-    tokenParams.set("redirect_uri", requiredEnv("INSTAGRAM_REDIRECT_URI"));
-    tokenParams.set("code", String(code));
+    callbackStep = "short_lived_token_exchange";
 
-    const shortToken = await fetchJson("https://api.instagram.com/oauth/access_token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: tokenParams,
-    });
+    const shortToken = await exchangeCodeForShortInstagramToken(code);
 
-    if (!shortToken?.access_token) {
-      throw new Error("Instagram did not return a short-lived access token.");
+    callbackStep = "long_lived_token_exchange";
+
+    const longResult = await exchangeShortTokenForLongInstagramToken(
+      shortToken.access_token
+    );
+
+    let tokenToStore = shortToken.access_token;
+    let expiresIn = 55 * 60;
+    let tokenSource = "short_lived";
+    let longExchangeWarning = null;
+
+    if (longResult.ok && longResult.token?.access_token) {
+      tokenToStore = longResult.token.access_token;
+      expiresIn = Number(longResult.token.expires_in || 60 * 24 * 60 * 60);
+      tokenSource = "long_lived";
+      longExchangeWarning = longResult.warning;
+    } else {
+      longExchangeWarning = longResult.warning;
     }
 
-    const longUrl = new URL("https://graph.instagram.com/access_token");
-    longUrl.searchParams.set("grant_type", "ig_exchange_token");
-    longUrl.searchParams.set("client_secret", requiredEnv("INSTAGRAM_APP_SECRET"));
-    longUrl.searchParams.set("access_token", shortToken.access_token);
+    callbackStep = "profile_fetch";
 
-    const longToken = await fetchJson(longUrl.toString());
+    const profileResult = await fetchInstagramProfile(tokenToStore, shortToken);
+    const profile = profileResult.profile;
+    const igUserId = String(profileResult.igUserId || shortToken.user_id || "");
 
-    const accessToken = longToken?.access_token || shortToken.access_token;
-    const expiresIn = longToken?.expires_in || null;
-
-    const profileUrl = new URL(`https://graph.instagram.com/${graphVersion()}/me`);
-    profileUrl.searchParams.set("fields", "user_id,username,account_type,media_count");
-    profileUrl.searchParams.set("access_token", accessToken);
-
-    const profile = await fetchJson(profileUrl.toString());
-
-    const igUserId = String(profile.user_id || profile.id || shortToken.user_id || "");
     if (!igUserId) {
       throw new Error("Could not determine Instagram user id.");
     }
 
-    const tokenExpiresAt = expiresIn
-      ? new Date(Date.now() + Number(expiresIn) * 1000).toISOString()
-      : null;
+    callbackStep = "database_save";
 
-    const encryptedToken = encryptText(accessToken);
+    const tokenExpiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+    const encryptedToken = encryptText(tokenToStore);
 
     const { data: savedAccount, error: upsertError } = await supabase
       .from("social_accounts")
@@ -809,30 +986,88 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
       .update({ used_at: new Date().toISOString() })
       .eq("state", String(state));
 
+    if (tokenSource === "short_lived") {
+      await addPublishLog({
+        userId: oauthState.user_id,
+        socialAccountId: savedAccount.id,
+        action: "instagram_long_lived_token_exchange_failed",
+        status: "warning",
+        message:
+          "Long-lived token exchange failed. Stored short-lived token temporarily.",
+        meta: {
+          fallback: "short_lived_token",
+          warning: longExchangeWarning,
+        },
+      });
+    } else if (longExchangeWarning) {
+      await addPublishLog({
+        userId: oauthState.user_id,
+        socialAccountId: savedAccount.id,
+        action: "instagram_long_lived_token_exchange_warning",
+        status: "warning",
+        message:
+          "Long-lived token exchange succeeded after fallback method.",
+        meta: longExchangeWarning,
+      });
+    }
+
+    await addPublishLog({
+      userId: oauthState.user_id,
+      socialAccountId: savedAccount.id,
+      action: "instagram_account_connected",
+      status: "success",
+      message: "Instagram account connected successfully.",
+      meta: {
+        username: savedAccount.username || null,
+        igUserId: savedAccount.ig_user_id,
+        accountType: savedAccount.account_type || null,
+        tokenSource,
+        profileFetchAttempt: profileResult.attempt,
+      },
+    });
+
     const successUrl = process.env.FRONTEND_SUCCESS_URL;
 
-    return res.send(htmlPage(
-      "Instagram Connected",
-      `
+    return res.send(
+      htmlPage(
+        "Instagram Connected",
+        `
         <h1>Instagram connected successfully.</h1>
-        <p>Connected account: <b>${savedAccount.username || igUserId}</b></p>
+        <p>Connected account: <b>${escapeHtml(
+          savedAccount.username || igUserId
+        )}</b></p>
+        <p>Token type stored: <b>${escapeHtml(tokenSource)}</b></p>
+        ${
+          tokenSource === "short_lived"
+            ? `<p style="color:#b45309;"><b>Warning:</b> Long-lived token exchange failed, so the connection is temporary. Publishing may fail after about 1 hour until long-lived token exchange is fixed.</p>`
+            : ""
+        }
         <p>You can close this window and return to the app.</p>
-        ${successUrl ? `<p><a href="${successUrl}">Return to app</a></p>` : ""}
+        ${successUrl ? `<p><a href="${escapeHtml(successUrl)}">Return to app</a></p>` : ""}
       `
-    ));
+      )
+    );
   } catch (err) {
-    console.error("Instagram callback error:", cleanErrorMessage(err));
+    console.error("Instagram callback error:", {
+      step: callbackStep,
+      error: cleanErrorMessage(err),
+      details: safeErrorDetails(err),
+      profileFetchAttempts: err?.profileFetchAttempts || null,
+    });
 
     const errorUrl = process.env.FRONTEND_ERROR_URL;
 
-    return res.status(500).send(htmlPage(
-      "Instagram Connection Failed",
-      `
+    return res.status(500).send(
+      htmlPage(
+        "Instagram Connection Failed",
+        `
         <h1>Instagram connection failed</h1>
-        <p>${cleanErrorMessage(err)}</p>
-        ${errorUrl ? `<p><a href="${errorUrl}">Return to app</a></p>` : ""}
+        <p><b>Step:</b> ${escapeHtml(callbackStep)}</p>
+        <p><b>Error:</b> ${escapeHtml(cleanErrorMessage(err))}</p>
+        ${errorUrl ? `<p><a href="${escapeHtml(errorUrl)}">Return to app</a></p>` : ""}
       `
-    ));
+      )
+    );
   }
 });
 
@@ -1059,8 +1294,7 @@ app.post("/api/posts/schedule", requireUser, async (req, res) => {
     }
 
     const detectedMediaType =
-      media_type ||
-      (asset.resource_type === "video" ? "video" : "image");
+      media_type || (asset.resource_type === "video" ? "video" : "image");
 
     const { data, error } = await supabase
       .from("scheduled_posts")
@@ -1132,8 +1366,7 @@ app.post("/api/posts/publish-now", requireUser, async (req, res) => {
       }
 
       const detectedMediaType =
-        media_type ||
-        (asset.resource_type === "video" ? "video" : "image");
+        media_type || (asset.resource_type === "video" ? "video" : "image");
 
       const { data: created, error: createError } = await supabase
         .from("scheduled_posts")
@@ -1165,7 +1398,7 @@ app.post("/api/posts/publish-now", requireUser, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: cleanErrorMessage(error),
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
   }
 });
@@ -1182,7 +1415,7 @@ app.post("/api/posts/:id/retry", requireUser, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: cleanErrorMessage(error),
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
   }
 });
@@ -1295,7 +1528,9 @@ app.get("/api/insights/account", requireUser, async (req, res) => {
 
     const period = String(req.query.period || "day");
 
-    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/insights`);
+    const url = new URL(
+      `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/insights`
+    );
     url.searchParams.set("metric", metrics);
     url.searchParams.set("period", period);
     url.searchParams.set("access_token", token);
@@ -1310,7 +1545,7 @@ app.get("/api/insights/account", requireUser, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: cleanErrorMessage(error),
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
   }
 });
@@ -1345,13 +1580,17 @@ app.get("/api/posts/:id/insights", requireUser, async (req, res) => {
 
     const token = decryptText(account.encrypted_access_token);
 
-    const metrics = String(req.query.metrics || "views,reach,total_interactions,likes,comments,shares,saved")
+    const metrics = String(
+      req.query.metrics || "views,reach,total_interactions,likes,comments,shares,saved"
+    )
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean)
       .join(",");
 
-    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/insights`);
+    const url = new URL(
+      `https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/insights`
+    );
     url.searchParams.set("metric", metrics);
     url.searchParams.set("access_token", token);
 
@@ -1365,7 +1604,7 @@ app.get("/api/posts/:id/insights", requireUser, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: cleanErrorMessage(error),
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
   }
 });
@@ -1402,8 +1641,13 @@ app.get("/api/posts/:id/comments", requireUser, async (req, res) => {
 
     const token = decryptText(account.encrypted_access_token);
 
-    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/comments`);
-    url.searchParams.set("fields", "id,text,username,timestamp,like_count,replies{id,text,username,timestamp}");
+    const url = new URL(
+      `https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/comments`
+    );
+    url.searchParams.set(
+      "fields",
+      "id,text,username,timestamp,like_count,replies{id,text,username,timestamp}"
+    );
     url.searchParams.set("access_token", token);
 
     const data = await fetchJson(url.toString());
@@ -1416,7 +1660,7 @@ app.get("/api/posts/:id/comments", requireUser, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: cleanErrorMessage(error),
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
   }
 });
@@ -1475,7 +1719,7 @@ app.post("/api/posts/:id/comments/:commentId/reply", requireUser, async (req, re
     return res.status(500).json({
       ok: false,
       error: cleanErrorMessage(error),
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
   }
 });
@@ -1500,8 +1744,13 @@ app.get("/api/messages/conversations", requireUser, async (req, res) => {
 
     const token = decryptText(account.encrypted_access_token);
 
-    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/conversations`);
-    url.searchParams.set("fields", "id,participants,updated_time,messages.limit(20){id,from,to,message,created_time}");
+    const url = new URL(
+      `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/conversations`
+    );
+    url.searchParams.set(
+      "fields",
+      "id,participants,updated_time,messages.limit(20){id,from,to,message,created_time}"
+    );
     url.searchParams.set("platform", "instagram");
     url.searchParams.set("access_token", token);
 
@@ -1515,7 +1764,7 @@ app.get("/api/messages/conversations", requireUser, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: cleanErrorMessage(error),
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
   }
 });
@@ -1563,7 +1812,7 @@ app.post("/api/messages/send", requireUser, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: cleanErrorMessage(error),
-      meta: error.response || null,
+      meta: safeErrorDetails(error),
     });
   }
 });
