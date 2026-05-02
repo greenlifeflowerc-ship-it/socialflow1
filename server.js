@@ -145,6 +145,63 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
   `);
 });
 
+app.get("/privacy", (req, res) => {
+  res.send(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Privacy Policy - SocialFlow</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6;">
+        <h1>Privacy Policy</h1>
+        <p>SocialFlow allows users to connect their Instagram professional accounts only after user authorization.</p>
+        <p>We may store connected Instagram account information, scheduled posts, media URLs, captions, publishing status, and related logs needed to provide scheduling and publishing features.</p>
+        <p>We do not sell user data. Access tokens and sensitive credentials are stored securely on the backend and are not exposed to the mobile app.</p>
+        <p>Users can disconnect their Instagram account or request deletion of their data.</p>
+        <p>Contact us for privacy requests.</p>
+      </body>
+    </html>
+  `);
+});
+
+app.get("/terms", (req, res) => {
+  res.send(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Terms of Service - SocialFlow</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6;">
+        <h1>Terms of Service</h1>
+        <p>By using SocialFlow, users agree that they are responsible for the content they upload, schedule, and publish.</p>
+        <p>Users must only publish content they own or have permission to use.</p>
+        <p>SocialFlow provides scheduling and publishing tools but does not guarantee platform availability, approval, or publishing success if third-party APIs reject the request.</p>
+        <p>Users must comply with Instagram, Meta, and all applicable laws and policies.</p>
+      </body>
+    </html>
+  `);
+});
+
+app.get("/data-deletion", (req, res) => {
+  res.send(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Data Deletion - SocialFlow</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6;">
+        <h1>User Data Deletion</h1>
+        <p>Users can request deletion of their account data, connected Instagram account data, scheduled posts, media URLs, and publishing logs.</p>
+        <p>To request deletion, contact the app owner with the email address associated with your account.</p>
+        <p>After verification, we will delete the related data from our systems unless retention is required for legal or security reasons.</p>
+      </body>
+    </html>
+  `);
+});
+
 app.use((req, res) => {
   res.status(404).json({
     ok: false,
