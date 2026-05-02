@@ -37,9 +37,11 @@ function hasEnv(name) {
 
 function requiredEnv(name) {
   const value = process.env[name];
+
   if (!value || !String(value).trim()) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
+
   return value;
 }
 
@@ -50,7 +52,7 @@ function graphVersion() {
 function instagramScopes() {
   return (
     process.env.INSTAGRAM_SCOPES ||
-    "instagram_business_basic,instagram_business_content_publish"
+    "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_insights,instagram_business_manage_messages"
   )
     .split(",")
     .map((s) => s.trim())
@@ -81,19 +83,23 @@ function configureCloudinary() {
 
 function encryptionKey() {
   const raw = requiredEnv("TOKEN_ENCRYPTION_KEY");
+
   if (raw.length < 32) {
     throw new Error("TOKEN_ENCRYPTION_KEY must be at least 32 characters.");
   }
+
   return crypto.createHash("sha256").update(raw).digest();
 }
 
 function encryptText(plainText) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
+
   const encrypted = Buffer.concat([
     cipher.update(String(plainText), "utf8"),
     cipher.final(),
   ]);
+
   const tag = cipher.getAuthTag();
 
   return [
@@ -105,7 +111,8 @@ function encryptText(plainText) {
 }
 
 function decryptText(encryptedText) {
-  const parts = String(encryptedText).split(":");
+  const parts = String(encryptedText || "").split(":");
+
   if (parts.length !== 4 || parts[0] !== "v1") {
     throw new Error("Invalid encrypted text format.");
   }
@@ -269,7 +276,7 @@ async function getAccountForUser({ userId, accountId, includeToken = false }) {
 
   const columns = includeToken
     ? "*"
-    : "id,user_id,platform,ig_user_id,username,account_type,status,created_at,updated_at";
+    : "id,user_id,platform,ig_user_id,username,account_type,status,token_type,token_expires_at,token_last_refreshed_at,token_refresh_error,created_at,updated_at";
 
   const { data, error } = await supabase
     .from("social_accounts")
@@ -298,6 +305,7 @@ async function addPublishLog({
 }) {
   try {
     const supabase = getSupabaseAdmin();
+
     await supabase.from("publish_logs").insert({
       user_id: userId,
       post_id: postId,
@@ -312,7 +320,12 @@ async function addPublishLog({
   }
 }
 
-async function uploadBufferToCloudinary({ buffer, mimetype, originalname, userId }) {
+async function uploadBufferToCloudinary({
+  buffer,
+  mimetype,
+  originalname,
+  userId,
+}) {
   configureCloudinary();
 
   const assetId = crypto.randomUUID();
@@ -329,6 +342,7 @@ async function uploadBufferToCloudinary({ buffer, mimetype, originalname, userId
       },
       (error, result) => {
         if (error) return reject(error);
+
         return resolve({
           result,
           assetId,
@@ -346,6 +360,7 @@ async function uploadBufferToCloudinary({ buffer, mimetype, originalname, userId
 
 async function exchangeCodeForShortInstagramToken(code) {
   const tokenParams = new URLSearchParams();
+
   tokenParams.set("client_id", requiredEnv("INSTAGRAM_APP_ID"));
   tokenParams.set("client_secret", requiredEnv("INSTAGRAM_APP_SECRET"));
   tokenParams.set("grant_type", "authorization_code");
@@ -392,6 +407,7 @@ async function exchangeShortTokenForLongInstagramToken(shortAccessToken) {
     };
   } catch (getError) {
     const postParams = new URLSearchParams();
+
     postParams.set("grant_type", "ig_exchange_token");
     postParams.set("client_secret", clientSecret);
     postParams.set("access_token", shortAccessToken);
@@ -430,6 +446,125 @@ async function exchangeShortTokenForLongInstagramToken(shortAccessToken) {
         },
       };
     }
+  }
+}
+
+async function refreshLongLivedInstagramToken(longLivedAccessToken) {
+  const refreshUrl = new URL("https://graph.instagram.com/refresh_access_token");
+
+  refreshUrl.searchParams.set("grant_type", "ig_refresh_token");
+  refreshUrl.searchParams.set("access_token", longLivedAccessToken);
+
+  const data = await fetchJson(refreshUrl.toString(), {
+    method: "GET",
+  });
+
+  if (!data?.access_token) {
+    throw new Error("Instagram refresh token response did not include access_token.");
+  }
+
+  return data;
+}
+
+function isPastDate(value) {
+  return Boolean(value && new Date(value).getTime() <= Date.now());
+}
+
+function daysUntil(value) {
+  if (!value) return null;
+
+  return (new Date(value).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+}
+
+function shouldRefreshInstagramToken(account, { force = false } = {}) {
+  if (!account || account.token_type !== "long_lived") return false;
+  if (force) return true;
+
+  const daysLeft = daysUntil(account.token_expires_at);
+
+  if (daysLeft === null) return false;
+
+  if (
+    daysLeft >
+    Number(process.env.IG_TOKEN_REFRESH_DAYS_BEFORE_EXPIRY || 14)
+  ) {
+    return false;
+  }
+
+  if (account.token_last_refreshed_at) {
+    const lastRefreshMs = new Date(account.token_last_refreshed_at).getTime();
+    const minAgeMs = 24 * 60 * 60 * 1000;
+
+    if (
+      Number.isFinite(lastRefreshMs) &&
+      Date.now() - lastRefreshMs < minAgeMs
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+async function getUsableInstagramToken({ account, forceRefresh = false }) {
+  if (!account?.encrypted_access_token) {
+    throw new Error("Instagram account token is missing. Reconnect the Instagram account.");
+  }
+
+  if (forceRefresh && account.token_type !== "long_lived") {
+    throw new Error("Only long-lived Instagram tokens can be refreshed. Reconnect the account to create a long-lived token.");
+  }
+
+  const token = decryptText(account.encrypted_access_token);
+
+  if (account.token_expires_at && isPastDate(account.token_expires_at)) {
+    throw new Error("Instagram access token has expired. Reconnect the Instagram account.");
+  }
+
+  if (!shouldRefreshInstagramToken(account, { force: forceRefresh })) {
+    return token;
+  }
+
+  const supabase = getSupabaseAdmin();
+
+  try {
+    const refreshed = await refreshLongLivedInstagramToken(token);
+    const refreshedToken = refreshed.access_token;
+    const expiresIn = Number(refreshed.expires_in || 60 * 24 * 60 * 60);
+    const tokenExpiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+    const encryptedToken = encryptText(refreshedToken);
+
+    const { error } = await supabase
+      .from("social_accounts")
+      .update({
+        encrypted_access_token: encryptedToken,
+        token_expires_at: tokenExpiresAt,
+        token_type: "long_lived",
+        token_last_refreshed_at: new Date().toISOString(),
+        token_refresh_error: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", account.id);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return refreshedToken;
+  } catch (error) {
+    await supabase
+      .from("social_accounts")
+      .update({
+        token_refresh_error: cleanErrorMessage(error),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", account.id);
+
+    if (forceRefresh) {
+      throw error;
+    }
+
+    return token;
   }
 }
 
@@ -472,6 +607,7 @@ async function fetchInstagramProfile(accessToken, shortToken = null) {
   for (const attempt of attempts) {
     try {
       const profileUrl = new URL(attempt.url);
+
       profileUrl.searchParams.set("fields", attempt.fields);
       profileUrl.searchParams.set("access_token", accessToken);
 
@@ -525,7 +661,9 @@ async function fetchInstagramProfile(accessToken, shortToken = null) {
   const finalError = new Error(
     "Failed to fetch Instagram profile and no fallback user_id was available."
   );
+
   finalError.profileFetchAttempts = errors;
+
   throw finalError;
 }
 
@@ -535,6 +673,7 @@ async function createInstagramContainer({ account, token, post }) {
   const baseUrl = `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/media`;
 
   const params = new URLSearchParams();
+
   params.set("caption", post.caption || "");
   params.set("access_token", token);
 
@@ -565,6 +704,7 @@ async function waitForContainerReady({ containerId, token }) {
 
   for (let i = 0; i < maxChecks; i += 1) {
     const url = new URL(`https://graph.instagram.com/${graphVersion()}/${containerId}`);
+
     url.searchParams.set("fields", "id,status_code,status");
     url.searchParams.set("access_token", token);
 
@@ -588,6 +728,7 @@ async function publishInstagramContainer({ account, token, containerId }) {
   const url = `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/media_publish`;
 
   const params = new URLSearchParams();
+
   params.set("creation_id", containerId);
   params.set("access_token", token);
 
@@ -602,6 +743,7 @@ async function publishInstagramContainer({ account, token, containerId }) {
 
 async function fetchPublishedMedia({ mediaId, token }) {
   const url = new URL(`https://graph.instagram.com/${graphVersion()}/${mediaId}`);
+
   url.searchParams.set("fields", "id,permalink,media_type,media_url,timestamp,caption");
   url.searchParams.set("access_token", token);
 
@@ -613,7 +755,9 @@ async function publishPostById({ postId, userId = null }) {
 
   let query = supabase.from("scheduled_posts").select("*").eq("id", postId).single();
 
-  if (userId) query = query.eq("user_id", userId);
+  if (userId) {
+    query = query.eq("user_id", userId);
+  }
 
   const { data: currentPost, error: readError } = await query;
 
@@ -659,9 +803,9 @@ async function publishPostById({ postId, userId = null }) {
     includeToken: true,
   });
 
-  const token = decryptText(account.encrypted_access_token);
-
   try {
+    const token = await getUsableInstagramToken({ account });
+
     await addPublishLog({
       userId: lockedPost.user_id,
       postId: lockedPost.id,
@@ -678,16 +822,22 @@ async function publishPostById({ postId, userId = null }) {
     });
 
     const containerId = container.id;
+
     if (!containerId) {
       throw new Error("Instagram did not return a media container id.");
     }
 
     await supabase
       .from("scheduled_posts")
-      .update({ instagram_container_id: containerId })
+      .update({
+        instagram_container_id: containerId,
+      })
       .eq("id", lockedPost.id);
 
-    await waitForContainerReady({ containerId, token });
+    await waitForContainerReady({
+      containerId,
+      token,
+    });
 
     const published = await publishInstagramContainer({
       account,
@@ -696,13 +846,18 @@ async function publishPostById({ postId, userId = null }) {
     });
 
     const mediaId = published.id;
+
     if (!mediaId) {
       throw new Error("Instagram did not return published media id.");
     }
 
     let mediaInfo = null;
+
     try {
-      mediaInfo = await fetchPublishedMedia({ mediaId, token });
+      mediaInfo = await fetchPublishedMedia({
+        mediaId,
+        token,
+      });
     } catch {
       mediaInfo = null;
     }
@@ -1003,6 +1158,12 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
           account_type: profile.account_type || null,
           encrypted_access_token: encryptedToken,
           token_expires_at: tokenExpiresAt,
+          token_type: tokenSource,
+          token_last_refreshed_at: null,
+          token_refresh_error:
+            tokenSource === "long_lived"
+              ? null
+              : "Long-lived token exchange failed; reconnect may be required soon.",
           scopes: instagramScopes(),
           status: "connected",
         },
@@ -1010,7 +1171,7 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
           onConflict: "user_id,platform,ig_user_id",
         }
       )
-      .select("id,username,ig_user_id,account_type,status")
+      .select("id,username,ig_user_id,account_type,status,token_type,token_expires_at")
       .single();
 
     if (upsertError) {
@@ -1019,7 +1180,9 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
 
     await supabase
       .from("oauth_states")
-      .update({ used_at: new Date().toISOString() })
+      .update({
+        used_at: new Date().toISOString(),
+      })
       .eq("state", String(state));
 
     if (profileResult.fallbackUsed) {
@@ -1135,11 +1298,17 @@ app.get("/api/accounts", requireUser, async (req, res) => {
 
     const { data, error } = await supabase
       .from("social_accounts")
-      .select("id,platform,ig_user_id,username,account_type,status,created_at,updated_at")
+      .select(
+        "id,platform,ig_user_id,username,account_type,status,token_type,token_expires_at,token_last_refreshed_at,token_refresh_error,created_at,updated_at"
+      )
       .eq("user_id", req.user.id)
-      .order("created_at", { ascending: false });
+      .order("created_at", {
+        ascending: false,
+      });
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
     return res.json({
       ok: true,
@@ -1153,19 +1322,64 @@ app.get("/api/accounts", requireUser, async (req, res) => {
   }
 });
 
+app.post("/api/accounts/:id/refresh-token", requireUser, async (req, res) => {
+  try {
+    const account = await getAccountForUser({
+      userId: req.user.id,
+      accountId: req.params.id,
+      includeToken: true,
+    });
+
+    await getUsableInstagramToken({
+      account,
+      forceRefresh: true,
+    });
+
+    const supabase = getSupabaseAdmin();
+
+    const { data, error } = await supabase
+      .from("social_accounts")
+      .select(
+        "id,platform,ig_user_id,username,account_type,status,token_type,token_expires_at,token_last_refreshed_at,token_refresh_error,created_at,updated_at"
+      )
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return res.json({
+      ok: true,
+      account: data,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
 app.delete("/api/accounts/:id", requireUser, async (req, res) => {
   try {
     const supabase = getSupabaseAdmin();
 
     const { data, error } = await supabase
       .from("social_accounts")
-      .update({ status: "disconnected" })
+      .update({
+        status: "disconnected",
+      })
       .eq("id", req.params.id)
       .eq("user_id", req.user.id)
       .select("id,platform,username,status")
       .single();
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
     return res.json({
       ok: true,
@@ -1226,7 +1440,9 @@ app.post("/api/media/upload", requireUser, upload.single("file"), async (req, re
       .select("*")
       .single();
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
     return res.json({
       ok: true,
@@ -1276,7 +1492,9 @@ app.get("/api/posts", requireUser, async (req, res) => {
         )
       `)
       .eq("user_id", req.user.id)
-      .order("created_at", { ascending: false });
+      .order("created_at", {
+        ascending: false,
+      });
 
     if (req.query.status) {
       query = query.eq("status", String(req.query.status));
@@ -1284,7 +1502,9 @@ app.get("/api/posts", requireUser, async (req, res) => {
 
     const { data, error } = await query;
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
     return res.json({
       ok: true,
@@ -1368,7 +1588,9 @@ app.post("/api/posts/schedule", requireUser, async (req, res) => {
       .select("*")
       .single();
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
     return res.json({
       ok: true,
@@ -1440,7 +1662,10 @@ app.post("/api/posts/publish-now", requireUser, async (req, res) => {
         .select("*")
         .single();
 
-      if (createError) throw new Error(createError.message);
+      if (createError) {
+        throw new Error(createError.message);
+      }
+
       postId = created.id;
     }
 
@@ -1482,14 +1707,18 @@ app.post("/api/posts/:id/cancel", requireUser, async (req, res) => {
 
     const { data, error } = await supabase
       .from("scheduled_posts")
-      .update({ status: "cancelled" })
+      .update({
+        status: "cancelled",
+      })
       .eq("id", req.params.id)
       .eq("user_id", req.user.id)
       .in("status", ["draft", "scheduled", "failed"])
       .select("*")
       .single();
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
     return res.json({
       ok: true,
@@ -1515,10 +1744,14 @@ app.post("/api/cron/publish-due", requireCron, async (req, res) => {
       .eq("status", "scheduled")
       .lte("scheduled_at", new Date().toISOString())
       .lt("attempts", 3)
-      .order("scheduled_at", { ascending: true })
+      .order("scheduled_at", {
+        ascending: true,
+      })
       .limit(Number(process.env.CRON_BATCH_SIZE || 10));
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
     const results = [];
 
@@ -1561,6 +1794,7 @@ app.post("/api/cron/publish-due", requireCron, async (req, res) => {
 app.get("/api/insights/account", requireUser, async (req, res) => {
   try {
     const accountId = req.query.account_id;
+
     if (!accountId) {
       return res.status(400).json({
         ok: false,
@@ -1574,7 +1808,9 @@ app.get("/api/insights/account", requireUser, async (req, res) => {
       includeToken: true,
     });
 
-    const token = decryptText(account.encrypted_access_token);
+    const token = await getUsableInstagramToken({
+      account,
+    });
 
     const metrics = String(req.query.metrics || "views,reach,total_interactions")
       .split(",")
@@ -1587,6 +1823,7 @@ app.get("/api/insights/account", requireUser, async (req, res) => {
     const url = new URL(
       `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/insights`
     );
+
     url.searchParams.set("metric", metrics);
     url.searchParams.set("period", period);
     url.searchParams.set("access_token", token);
@@ -1634,7 +1871,9 @@ app.get("/api/posts/:id/insights", requireUser, async (req, res) => {
       includeToken: true,
     });
 
-    const token = decryptText(account.encrypted_access_token);
+    const token = await getUsableInstagramToken({
+      account,
+    });
 
     const metrics = String(
       req.query.metrics || "views,reach,total_interactions,likes,comments,shares,saved"
@@ -1647,6 +1886,7 @@ app.get("/api/posts/:id/insights", requireUser, async (req, res) => {
     const url = new URL(
       `https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/insights`
     );
+
     url.searchParams.set("metric", metrics);
     url.searchParams.set("access_token", token);
 
@@ -1695,15 +1935,19 @@ app.get("/api/posts/:id/comments", requireUser, async (req, res) => {
       includeToken: true,
     });
 
-    const token = decryptText(account.encrypted_access_token);
+    const token = await getUsableInstagramToken({
+      account,
+    });
 
     const url = new URL(
       `https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/comments`
     );
+
     url.searchParams.set(
       "fields",
       "id,text,username,timestamp,like_count,replies{id,text,username,timestamp}"
     );
+
     url.searchParams.set("access_token", token);
 
     const data = await fetchJson(url.toString());
@@ -1751,11 +1995,14 @@ app.post("/api/posts/:id/comments/:commentId/reply", requireUser, async (req, re
       includeToken: true,
     });
 
-    const token = decryptText(account.encrypted_access_token);
+    const token = await getUsableInstagramToken({
+      account,
+    });
 
     const url = `https://graph.instagram.com/${graphVersion()}/${req.params.commentId}/replies`;
 
     const params = new URLSearchParams();
+
     params.set("message", String(message));
     params.set("access_token", token);
 
@@ -1785,6 +2032,7 @@ app.post("/api/posts/:id/comments/:commentId/reply", requireUser, async (req, re
 app.get("/api/messages/conversations", requireUser, async (req, res) => {
   try {
     const accountId = req.query.account_id;
+
     if (!accountId) {
       return res.status(400).json({
         ok: false,
@@ -1798,15 +2046,19 @@ app.get("/api/messages/conversations", requireUser, async (req, res) => {
       includeToken: true,
     });
 
-    const token = decryptText(account.encrypted_access_token);
+    const token = await getUsableInstagramToken({
+      account,
+    });
 
     const url = new URL(
       `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/conversations`
     );
+
     url.searchParams.set(
       "fields",
       "id,participants,updated_time,messages.limit(20){id,from,to,message,created_time}"
     );
+
     url.searchParams.set("platform", "instagram");
     url.searchParams.set("access_token", token);
 
@@ -1842,13 +2094,19 @@ app.post("/api/messages/send", requireUser, async (req, res) => {
       includeToken: true,
     });
 
-    const token = decryptText(account.encrypted_access_token);
+    const token = await getUsableInstagramToken({
+      account,
+    });
 
     const url = `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/messages`;
 
     const body = {
-      recipient: { id: String(recipient_id) },
-      message: { text: String(message) },
+      recipient: {
+        id: String(recipient_id),
+      },
+      message: {
+        text: String(message),
+      },
     };
 
     const data = await fetchJson(url, {
@@ -1883,10 +2141,14 @@ app.get("/api/logs", requireUser, async (req, res) => {
       .from("publish_logs")
       .select("*")
       .eq("user_id", req.user.id)
-      .order("created_at", { ascending: false })
+      .order("created_at", {
+        ascending: false,
+      })
       .limit(Number(req.query.limit || 100));
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
     return res.json({
       ok: true,
@@ -1912,6 +2174,7 @@ app.use((req, res) => {
 
 app.use((err, req, res, next) => {
   console.error("Unhandled server error:", cleanErrorMessage(err));
+
   res.status(500).json({
     ok: false,
     error: "Internal server error.",
