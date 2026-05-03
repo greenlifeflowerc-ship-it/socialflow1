@@ -201,6 +201,79 @@ async function fetchJson(url, options = {}) {
   }
 }
 
+/* Gemini AI helpers */
+
+function getGeminiApiKey(req) {
+  const bodyKey = req.body?.api_key || req.body?.apiKey;
+  const headerKey = req.headers["x-gemini-api-key"];
+  const legacyQueryKey = req.query?.api_key || req.query?.apiKey;
+  const envKey = process.env.GEMINI_API_KEY;
+
+  return String(bodyKey || headerKey || legacyQueryKey || envKey || "").trim();
+}
+
+function normalizeGeminiModel(model) {
+  const value = String(model || process.env.GEMINI_TEXT_MODEL || "gemini-1.5-flash").trim();
+  return value.startsWith("models/") ? value.slice("models/".length) : value;
+}
+
+function extractGeminiText(data) {
+  const parts = data?.candidates?.[0]?.content?.parts;
+
+  if (!Array.isArray(parts)) return "";
+
+  return parts
+    .map((part) => part?.text || "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function missingGeminiKeyResponse(res) {
+  return res.status(400).json({
+    ok: false,
+    error:
+      "Gemini API key is missing. Add your key or configure GEMINI_API_KEY on the backend.",
+  });
+}
+
+async function fetchGeminiModels(apiKey) {
+  const url = new URL("https://generativelanguage.googleapis.com/v1beta/models");
+  url.searchParams.set("key", apiKey);
+
+  return fetchJson(url.toString());
+}
+
+async function generateGeminiText({ apiKey, model, prompt }) {
+  const normalizedModel = normalizeGeminiModel(model);
+  const url = new URL(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      normalizedModel
+    )}:generateContent`
+  );
+
+  url.searchParams.set("key", apiKey);
+
+  return fetchJson(url.toString(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: String(prompt || ""),
+            },
+          ],
+        },
+      ],
+    }),
+  });
+}
+
 async function requireUser(req, res, next) {
   try {
     const auth = req.headers.authorization || "";
@@ -892,6 +965,7 @@ app.get("/api/config/status", (req, res) => {
       hasEnv("TOKEN_ENCRYPTION_KEY") &&
       process.env.TOKEN_ENCRYPTION_KEY.length >= 32,
     cronConfigured: hasEnv("CRON_SECRET"),
+    geminiConfigured: hasEnv("GEMINI_API_KEY"),
     devNoAuthEnabled: process.env.ALLOW_DEV_NO_AUTH === "true",
   });
 });
@@ -2065,6 +2139,110 @@ app.post("/api/messages/send", requireUser, async (req, res) => {
     return res.json({ ok: true, sent: data });
   } catch (error) {
     return res.status(500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
+/* AI / Gemini */
+
+app.get("/api/ai/models", requireUser, async (req, res) => {
+  try {
+    const apiKey = getGeminiApiKey(req);
+
+    if (!apiKey) {
+      return missingGeminiKeyResponse(res);
+    }
+
+    const data = await fetchGeminiModels(apiKey);
+    const models = Array.isArray(data?.models) ? data.models : [];
+
+    return res.json({
+      ok: true,
+      provider: "gemini",
+      using_backend_key: !req.headers["x-gemini-api-key"] && !req.query?.api_key && !req.query?.apiKey,
+      models,
+    });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
+app.post("/api/ai/test", requireUser, async (req, res) => {
+  try {
+    const apiKey = getGeminiApiKey(req);
+
+    if (!apiKey) {
+      return missingGeminiKeyResponse(res);
+    }
+
+    const model = normalizeGeminiModel(req.body?.model || req.body?.text_model);
+    const data = await generateGeminiText({
+      apiKey,
+      model,
+      prompt:
+        "Reply with exactly this sentence if you can read this: AI connection successful.",
+    });
+
+    const text = extractGeminiText(data);
+
+    return res.json({
+      ok: true,
+      provider: "gemini",
+      model,
+      message: "AI connection successful",
+      text: text || "AI connection successful",
+    });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
+app.post("/api/ai/generate", requireUser, async (req, res) => {
+  try {
+    const apiKey = getGeminiApiKey(req);
+
+    if (!apiKey) {
+      return missingGeminiKeyResponse(res);
+    }
+
+    const prompt = req.body?.prompt;
+
+    if (!prompt || !String(prompt).trim()) {
+      return res.status(400).json({
+        ok: false,
+        error: "prompt is required.",
+      });
+    }
+
+    const model = normalizeGeminiModel(req.body?.model || req.body?.text_model);
+    const data = await generateGeminiText({
+      apiKey,
+      model,
+      prompt,
+    });
+
+    const text = extractGeminiText(data);
+
+    return res.json({
+      ok: true,
+      provider: "gemini",
+      model,
+      text,
+      raw: process.env.RETURN_RAW_AI_RESPONSE === "true" ? data : undefined,
+    });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
       ok: false,
       error: cleanErrorMessage(error),
       meta: safeErrorDetails(error),
