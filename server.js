@@ -37,12 +37,10 @@ function hasEnv(name) {
 
 function requiredEnv(name) {
   const value = process.env[name];
-
   if (!value || !String(value).trim()) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
-
-  return value;
+  return String(value).trim();
 }
 
 function graphVersion() {
@@ -83,25 +81,20 @@ function configureCloudinary() {
 
 function encryptionKey() {
   const raw = requiredEnv("TOKEN_ENCRYPTION_KEY");
-
   if (raw.length < 32) {
     throw new Error("TOKEN_ENCRYPTION_KEY must be at least 32 characters.");
   }
-
   return crypto.createHash("sha256").update(raw).digest();
 }
 
 function encryptText(plainText) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
-
   const encrypted = Buffer.concat([
     cipher.update(String(plainText), "utf8"),
     cipher.final(),
   ]);
-
   const tag = cipher.getAuthTag();
-
   return [
     "v1",
     iv.toString("base64url"),
@@ -112,18 +105,14 @@ function encryptText(plainText) {
 
 function decryptText(encryptedText) {
   const parts = String(encryptedText || "").split(":");
-
   if (parts.length !== 4 || parts[0] !== "v1") {
     throw new Error("Invalid encrypted text format.");
   }
-
   const iv = Buffer.from(parts[1], "base64url");
   const tag = Buffer.from(parts[2], "base64url");
   const encrypted = Buffer.from(parts[3], "base64url");
-
   const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), iv);
   decipher.setAuthTag(tag);
-
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
 }
 
@@ -305,7 +294,6 @@ async function addPublishLog({
 }) {
   try {
     const supabase = getSupabaseAdmin();
-
     await supabase.from("publish_logs").insert({
       user_id: userId,
       post_id: postId,
@@ -320,12 +308,7 @@ async function addPublishLog({
   }
 }
 
-async function uploadBufferToCloudinary({
-  buffer,
-  mimetype,
-  originalname,
-  userId,
-}) {
+async function uploadBufferToCloudinary({ buffer, mimetype, originalname, userId }) {
   configureCloudinary();
 
   const assetId = crypto.randomUUID();
@@ -342,7 +325,6 @@ async function uploadBufferToCloudinary({
       },
       (error, result) => {
         if (error) return reject(error);
-
         return resolve({
           result,
           assetId,
@@ -360,7 +342,6 @@ async function uploadBufferToCloudinary({
 
 async function exchangeCodeForShortInstagramToken(code) {
   const tokenParams = new URLSearchParams();
-
   tokenParams.set("client_id", requiredEnv("INSTAGRAM_APP_ID"));
   tokenParams.set("client_secret", requiredEnv("INSTAGRAM_APP_SECRET"));
   tokenParams.set("grant_type", "authorization_code");
@@ -407,7 +388,6 @@ async function exchangeShortTokenForLongInstagramToken(shortAccessToken) {
     };
   } catch (getError) {
     const postParams = new URLSearchParams();
-
     postParams.set("grant_type", "ig_exchange_token");
     postParams.set("client_secret", clientSecret);
     postParams.set("access_token", shortAccessToken);
@@ -451,7 +431,6 @@ async function exchangeShortTokenForLongInstagramToken(shortAccessToken) {
 
 async function refreshLongLivedInstagramToken(longLivedAccessToken) {
   const refreshUrl = new URL("https://graph.instagram.com/refresh_access_token");
-
   refreshUrl.searchParams.set("grant_type", "ig_refresh_token");
   refreshUrl.searchParams.set("access_token", longLivedAccessToken);
 
@@ -472,7 +451,6 @@ function isPastDate(value) {
 
 function daysUntil(value) {
   if (!value) return null;
-
   return (new Date(value).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
 }
 
@@ -481,13 +459,9 @@ function shouldRefreshInstagramToken(account, { force = false } = {}) {
   if (force) return true;
 
   const daysLeft = daysUntil(account.token_expires_at);
-
   if (daysLeft === null) return false;
 
-  if (
-    daysLeft >
-    Number(process.env.IG_TOKEN_REFRESH_DAYS_BEFORE_EXPIRY || 14)
-  ) {
+  if (daysLeft > Number(process.env.IG_TOKEN_REFRESH_DAYS_BEFORE_EXPIRY || 14)) {
     return false;
   }
 
@@ -495,10 +469,7 @@ function shouldRefreshInstagramToken(account, { force = false } = {}) {
     const lastRefreshMs = new Date(account.token_last_refreshed_at).getTime();
     const minAgeMs = 24 * 60 * 60 * 1000;
 
-    if (
-      Number.isFinite(lastRefreshMs) &&
-      Date.now() - lastRefreshMs < minAgeMs
-    ) {
+    if (Number.isFinite(lastRefreshMs) && Date.now() - lastRefreshMs < minAgeMs) {
       return false;
     }
   }
@@ -607,15 +578,11 @@ async function fetchInstagramProfile(accessToken, shortToken = null) {
   for (const attempt of attempts) {
     try {
       const profileUrl = new URL(attempt.url);
-
       profileUrl.searchParams.set("fields", attempt.fields);
       profileUrl.searchParams.set("access_token", accessToken);
 
       const profile = await fetchJson(profileUrl.toString());
-
-      const igUserId = String(
-        profile.user_id || profile.id || shortToken?.user_id || ""
-      );
+      const igUserId = String(profile.user_id || profile.id || shortToken?.user_id || "");
 
       if (!igUserId) {
         throw new Error(
@@ -658,12 +625,8 @@ async function fetchInstagramProfile(accessToken, shortToken = null) {
     };
   }
 
-  const finalError = new Error(
-    "Failed to fetch Instagram profile and no fallback user_id was available."
-  );
-
+  const finalError = new Error("Failed to fetch Instagram profile and no fallback user_id was available.");
   finalError.profileFetchAttempts = errors;
-
   throw finalError;
 }
 
@@ -671,9 +634,7 @@ async function fetchInstagramProfile(accessToken, shortToken = null) {
 
 async function createInstagramContainer({ account, token, post }) {
   const baseUrl = `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/media`;
-
   const params = new URLSearchParams();
-
   params.set("caption", post.caption || "");
   params.set("access_token", token);
 
@@ -704,7 +665,6 @@ async function waitForContainerReady({ containerId, token }) {
 
   for (let i = 0; i < maxChecks; i += 1) {
     const url = new URL(`https://graph.instagram.com/${graphVersion()}/${containerId}`);
-
     url.searchParams.set("fields", "id,status_code,status");
     url.searchParams.set("access_token", token);
 
@@ -726,9 +686,7 @@ async function waitForContainerReady({ containerId, token }) {
 
 async function publishInstagramContainer({ account, token, containerId }) {
   const url = `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/media_publish`;
-
   const params = new URLSearchParams();
-
   params.set("creation_id", containerId);
   params.set("access_token", token);
 
@@ -743,21 +701,16 @@ async function publishInstagramContainer({ account, token, containerId }) {
 
 async function fetchPublishedMedia({ mediaId, token }) {
   const url = new URL(`https://graph.instagram.com/${graphVersion()}/${mediaId}`);
-
   url.searchParams.set("fields", "id,permalink,media_type,media_url,timestamp,caption");
   url.searchParams.set("access_token", token);
-
   return fetchJson(url.toString());
 }
 
 async function publishPostById({ postId, userId = null }) {
   const supabase = getSupabaseAdmin();
-
   let query = supabase.from("scheduled_posts").select("*").eq("id", postId).single();
 
-  if (userId) {
-    query = query.eq("user_id", userId);
-  }
+  if (userId) query = query.eq("user_id", userId);
 
   const { data: currentPost, error: readError } = await query;
 
@@ -815,12 +768,7 @@ async function publishPostById({ postId, userId = null }) {
       message: "Publishing started.",
     });
 
-    const container = await createInstagramContainer({
-      account,
-      token,
-      post: lockedPost,
-    });
-
+    const container = await createInstagramContainer({ account, token, post: lockedPost });
     const containerId = container.id;
 
     if (!containerId) {
@@ -829,22 +777,12 @@ async function publishPostById({ postId, userId = null }) {
 
     await supabase
       .from("scheduled_posts")
-      .update({
-        instagram_container_id: containerId,
-      })
+      .update({ instagram_container_id: containerId })
       .eq("id", lockedPost.id);
 
-    await waitForContainerReady({
-      containerId,
-      token,
-    });
+    await waitForContainerReady({ containerId, token });
 
-    const published = await publishInstagramContainer({
-      account,
-      token,
-      containerId,
-    });
-
+    const published = await publishInstagramContainer({ account, token, containerId });
     const mediaId = published.id;
 
     if (!mediaId) {
@@ -852,12 +790,8 @@ async function publishPostById({ postId, userId = null }) {
     }
 
     let mediaInfo = null;
-
     try {
-      mediaInfo = await fetchPublishedMedia({
-        mediaId,
-        token,
-      });
+      mediaInfo = await fetchPublishedMedia({ mediaId, token });
     } catch {
       mediaInfo = null;
     }
@@ -943,27 +877,21 @@ app.get("/api/health", (req, res) => {
 app.get("/api/config/status", (req, res) => {
   res.json({
     ok: true,
-
     instagramConfigured:
       hasEnv("INSTAGRAM_APP_ID") &&
       hasEnv("INSTAGRAM_APP_SECRET") &&
       hasEnv("INSTAGRAM_REDIRECT_URI") &&
       hasEnv("META_GRAPH_VERSION"),
-
     supabaseConfigured:
       hasEnv("SUPABASE_URL") && hasEnv("SUPABASE_SERVICE_ROLE_KEY"),
-
     cloudinaryConfigured:
       hasEnv("CLOUDINARY_CLOUD_NAME") &&
       hasEnv("CLOUDINARY_API_KEY") &&
       hasEnv("CLOUDINARY_API_SECRET"),
-
     tokenEncryptionConfigured:
       hasEnv("TOKEN_ENCRYPTION_KEY") &&
       process.env.TOKEN_ENCRYPTION_KEY.length >= 32,
-
     cronConfigured: hasEnv("CRON_SECRET"),
-
     devNoAuthEnabled: process.env.ALLOW_DEV_NO_AUTH === "true",
   });
 });
@@ -1060,7 +988,6 @@ app.get("/api/auth/instagram/start", requireUser, async (req, res) => {
 
 app.get("/api/auth/instagram/callback", async (req, res) => {
   const { code, state, error, error_reason, error_description } = req.query;
-
   let callbackStep = "received_callback";
 
   try {
@@ -1080,15 +1007,11 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
 
     if (!code || !state) {
       return res.status(400).send(
-        htmlPage(
-          "Instagram Connection Failed",
-          `<h1>Missing code or state.</h1>`
-        )
+        htmlPage("Instagram Connection Failed", `<h1>Missing code or state.</h1>`)
       );
     }
 
     const supabase = getSupabaseAdmin();
-
     callbackStep = "state_validation";
 
     const { data: oauthState, error: stateError } = await supabase
@@ -1101,22 +1024,15 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
 
     if (stateError || !oauthState) {
       return res.status(400).send(
-        htmlPage(
-          "Instagram Connection Failed",
-          `<h1>Invalid or expired OAuth state.</h1>`
-        )
+        htmlPage("Instagram Connection Failed", `<h1>Invalid or expired OAuth state.</h1>`)
       );
     }
 
     callbackStep = "short_lived_token_exchange";
-
     const shortToken = await exchangeCodeForShortInstagramToken(code);
 
     callbackStep = "long_lived_token_exchange";
-
-    const longResult = await exchangeShortTokenForLongInstagramToken(
-      shortToken.access_token
-    );
+    const longResult = await exchangeShortTokenForLongInstagramToken(shortToken.access_token);
 
     let tokenToStore = shortToken.access_token;
     let expiresIn = 55 * 60;
@@ -1133,7 +1049,6 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
     }
 
     callbackStep = "profile_fetch";
-
     const profileResult = await fetchInstagramProfile(tokenToStore, shortToken);
     const profile = profileResult.profile || {};
     const igUserId = String(profileResult.igUserId || shortToken.user_id || "");
@@ -1143,46 +1058,78 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
     }
 
     callbackStep = "database_save";
-
     const tokenExpiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
     const encryptedToken = encryptText(tokenToStore);
 
-    const { data: savedAccount, error: upsertError } = await supabase
-      .from("social_accounts")
-      .upsert(
-        {
-          user_id: oauthState.user_id,
-          platform: "instagram",
-          ig_user_id: igUserId,
-          username: profile.username || null,
-          account_type: profile.account_type || null,
-          encrypted_access_token: encryptedToken,
-          token_expires_at: tokenExpiresAt,
-          token_type: tokenSource,
-          token_last_refreshed_at: null,
-          token_refresh_error:
-            tokenSource === "long_lived"
-              ? null
-              : "Long-lived token exchange failed; reconnect may be required soon.",
-          scopes: instagramScopes(),
-          status: "connected",
-        },
-        {
-          onConflict: "user_id,platform,ig_user_id",
-        }
-      )
-      .select("id,username,ig_user_id,account_type,status,token_type,token_expires_at")
-      .single();
+    const accountPayload = {
+      user_id: oauthState.user_id,
+      platform: "instagram",
+      ig_user_id: igUserId,
+      username: profile.username || null,
+      account_type: profile.account_type || null,
+      encrypted_access_token: encryptedToken,
+      token_expires_at: tokenExpiresAt,
+      token_type: tokenSource,
+      token_last_refreshed_at: null,
+      token_refresh_error:
+        tokenSource === "long_lived"
+          ? null
+          : "Long-lived token exchange failed; reconnect may be required soon.",
+      scopes: instagramScopes(),
+      status: "connected",
+      updated_at: new Date().toISOString(),
+    };
 
-    if (upsertError) {
-      throw new Error(upsertError.message);
+    const { data: existingAccount, error: existingError } = await supabase
+      .from("social_accounts")
+      .select("id,user_id,platform,ig_user_id,username,status")
+      .eq("platform", "instagram")
+      .eq("ig_user_id", igUserId)
+      .maybeSingle();
+
+    if (existingError) {
+      throw new Error(existingError.message);
+    }
+
+    let savedAccount = null;
+
+    if (existingAccount) {
+      if (existingAccount.user_id !== oauthState.user_id) {
+        throw new Error(
+          "This Instagram account is already connected to another user. Disconnect it from the old user first."
+        );
+      }
+
+      const { data: updatedAccount, error: updateError } = await supabase
+        .from("social_accounts")
+        .update(accountPayload)
+        .eq("id", existingAccount.id)
+        .eq("user_id", oauthState.user_id)
+        .select("id,username,ig_user_id,account_type,status,token_type,token_expires_at")
+        .single();
+
+      if (updateError) {
+        throw new Error(updateError.message);
+      }
+
+      savedAccount = updatedAccount;
+    } else {
+      const { data: insertedAccount, error: insertError } = await supabase
+        .from("social_accounts")
+        .insert(accountPayload)
+        .select("id,username,ig_user_id,account_type,status,token_type,token_expires_at")
+        .single();
+
+      if (insertError) {
+        throw new Error(insertError.message);
+      }
+
+      savedAccount = insertedAccount;
     }
 
     await supabase
       .from("oauth_states")
-      .update({
-        used_at: new Date().toISOString(),
-      })
+      .update({ used_at: new Date().toISOString() })
       .eq("state", String(state));
 
     if (profileResult.fallbackUsed) {
@@ -1191,8 +1138,7 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
         socialAccountId: savedAccount.id,
         action: "instagram_profile_fetch_fallback_used",
         status: "warning",
-        message:
-          "Instagram profile fetch failed. Saved account using user_id from token response.",
+        message: "Instagram profile fetch failed. Saved account using user_id from token response.",
         meta: {
           fallback: "short_token_user_id",
           attempts: profileResult.errors || [],
@@ -1206,8 +1152,7 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
         socialAccountId: savedAccount.id,
         action: "instagram_long_lived_token_exchange_failed",
         status: "warning",
-        message:
-          "Long-lived token exchange failed. Stored short-lived token temporarily.",
+        message: "Long-lived token exchange failed. Stored short-lived token temporarily.",
         meta: {
           fallback: "short_lived_token",
           warning: longExchangeWarning,
@@ -1247,9 +1192,7 @@ app.get("/api/auth/instagram/callback", async (req, res) => {
         "Instagram Connected",
         `
         <h1>Instagram connected successfully.</h1>
-        <p>Connected account: <b>${escapeHtml(
-          savedAccount.username || igUserId
-        )}</b></p>
+        <p>Connected account: <b>${escapeHtml(savedAccount.username || igUserId)}</b></p>
         <p>Token type stored: <b>${escapeHtml(tokenSource)}</b></p>
         ${
           profileResult.fallbackUsed
@@ -1302,23 +1245,13 @@ app.get("/api/accounts", requireUser, async (req, res) => {
         "id,platform,ig_user_id,username,account_type,status,token_type,token_expires_at,token_last_refreshed_at,token_refresh_error,created_at,updated_at"
       )
       .eq("user_id", req.user.id)
-      .order("created_at", {
-        ascending: false,
-      });
+      .order("created_at", { ascending: false });
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
-    return res.json({
-      ok: true,
-      accounts: data || [],
-    });
+    return res.json({ ok: true, accounts: data || [] });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: cleanErrorMessage(error),
-    });
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
   }
 });
 
@@ -1330,13 +1263,9 @@ app.post("/api/accounts/:id/refresh-token", requireUser, async (req, res) => {
       includeToken: true,
     });
 
-    await getUsableInstagramToken({
-      account,
-      forceRefresh: true,
-    });
+    await getUsableInstagramToken({ account, forceRefresh: true });
 
     const supabase = getSupabaseAdmin();
-
     const { data, error } = await supabase
       .from("social_accounts")
       .select(
@@ -1346,14 +1275,9 @@ app.post("/api/accounts/:id/refresh-token", requireUser, async (req, res) => {
       .eq("user_id", req.user.id)
       .single();
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
-    return res.json({
-      ok: true,
-      account: data,
-    });
+    return res.json({ ok: true, account: data });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -1369,27 +1293,17 @@ app.delete("/api/accounts/:id", requireUser, async (req, res) => {
 
     const { data, error } = await supabase
       .from("social_accounts")
-      .update({
-        status: "disconnected",
-      })
+      .update({ status: "disconnected" })
       .eq("id", req.params.id)
       .eq("user_id", req.user.id)
       .select("id,platform,username,status")
       .single();
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
-    return res.json({
-      ok: true,
-      account: data,
-    });
+    return res.json({ ok: true, account: data });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: cleanErrorMessage(error),
-    });
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
   }
 });
 
@@ -1398,21 +1312,12 @@ app.delete("/api/accounts/:id", requireUser, async (req, res) => {
 app.post("/api/media/upload", requireUser, upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing file.",
-      });
+      return res.status(400).json({ ok: false, error: "Missing file." });
     }
 
-    const allowed =
-      req.file.mimetype.startsWith("image/") ||
-      req.file.mimetype.startsWith("video/");
-
+    const allowed = req.file.mimetype.startsWith("image/") || req.file.mimetype.startsWith("video/");
     if (!allowed) {
-      return res.status(400).json({
-        ok: false,
-        error: "Only image and video files are allowed.",
-      });
+      return res.status(400).json({ ok: false, error: "Only image and video files are allowed." });
     }
 
     const uploaded = await uploadBufferToCloudinary({
@@ -1440,19 +1345,11 @@ app.post("/api/media/upload", requireUser, upload.single("file"), async (req, re
       .select("*")
       .single();
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
-    return res.json({
-      ok: true,
-      asset: data,
-    });
+    return res.json({ ok: true, asset: data });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: cleanErrorMessage(error),
-    });
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
   }
 });
 
@@ -1492,29 +1389,16 @@ app.get("/api/posts", requireUser, async (req, res) => {
         )
       `)
       .eq("user_id", req.user.id)
-      .order("created_at", {
-        ascending: false,
-      });
+      .order("created_at", { ascending: false });
 
-    if (req.query.status) {
-      query = query.eq("status", String(req.query.status));
-    }
+    if (req.query.status) query = query.eq("status", String(req.query.status));
 
     const { data, error } = await query;
+    if (error) throw new Error(error.message);
 
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    return res.json({
-      ok: true,
-      posts: data || [],
-    });
+    return res.json({ ok: true, posts: data || [] });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: cleanErrorMessage(error),
-    });
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
   }
 });
 
@@ -1530,23 +1414,20 @@ app.post("/api/posts/schedule", requireUser, async (req, res) => {
     } = req.body;
 
     if (!social_account_id) {
-      return res.status(400).json({
-        ok: false,
-        error: "social_account_id is required.",
-      });
+      return res.status(400).json({ ok: false, error: "social_account_id is required." });
     }
-
     if (!media_asset_id) {
-      return res.status(400).json({
-        ok: false,
-        error: "media_asset_id is required.",
-      });
+      return res.status(400).json({ ok: false, error: "media_asset_id is required." });
+    }
+    if (!scheduled_at) {
+      return res.status(400).json({ ok: false, error: "scheduled_at is required." });
     }
 
-    if (!scheduled_at) {
+    if (String(media_asset_id).startsWith("media_")) {
       return res.status(400).json({
         ok: false,
-        error: "scheduled_at is required.",
+        error: "Invalid media_asset_id. The app sent a local temporary media id instead of the backend media_assets.id returned from upload.",
+        media_asset_id,
       });
     }
 
@@ -1566,11 +1447,14 @@ app.post("/api/posts/schedule", requireUser, async (req, res) => {
       .single();
 
     if (assetError || !asset) {
-      throw new Error("Media asset not found for this user.");
+      return res.status(400).json({
+        ok: false,
+        error: "Media asset not found for this user.",
+        media_asset_id,
+      });
     }
 
-    const detectedMediaType =
-      media_type || (asset.resource_type === "video" ? "video" : "image");
+    const detectedMediaType = media_type || (asset.resource_type === "video" ? "video" : "image");
 
     const { data, error } = await supabase
       .from("scheduled_posts")
@@ -1588,34 +1472,18 @@ app.post("/api/posts/schedule", requireUser, async (req, res) => {
       .select("*")
       .single();
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
-    return res.json({
-      ok: true,
-      post: data,
-    });
+    return res.json({ ok: true, post: data });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: cleanErrorMessage(error),
-    });
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
   }
 });
 
 app.post("/api/posts/publish-now", requireUser, async (req, res) => {
   try {
-    const {
-      post_id,
-      social_account_id,
-      media_asset_id,
-      caption,
-      media_type,
-    } = req.body;
-
+    const { post_id, social_account_id, media_asset_id, caption, media_type } = req.body;
     let postId = post_id;
-
     const supabase = getSupabaseAdmin();
 
     if (!postId) {
@@ -1643,8 +1511,7 @@ app.post("/api/posts/publish-now", requireUser, async (req, res) => {
         throw new Error("Media asset not found for this user.");
       }
 
-      const detectedMediaType =
-        media_type || (asset.resource_type === "video" ? "video" : "image");
+      const detectedMediaType = media_type || (asset.resource_type === "video" ? "video" : "image");
 
       const { data: created, error: createError } = await supabase
         .from("scheduled_posts")
@@ -1662,18 +1529,11 @@ app.post("/api/posts/publish-now", requireUser, async (req, res) => {
         .select("*")
         .single();
 
-      if (createError) {
-        throw new Error(createError.message);
-      }
-
+      if (createError) throw new Error(createError.message);
       postId = created.id;
     }
 
-    const result = await publishPostById({
-      postId,
-      userId: req.user.id,
-    });
-
+    const result = await publishPostById({ postId, userId: req.user.id });
     return res.json(result);
   } catch (error) {
     return res.status(500).json({
@@ -1686,11 +1546,7 @@ app.post("/api/posts/publish-now", requireUser, async (req, res) => {
 
 app.post("/api/posts/:id/retry", requireUser, async (req, res) => {
   try {
-    const result = await publishPostById({
-      postId: req.params.id,
-      userId: req.user.id,
-    });
-
+    const result = await publishPostById({ postId: req.params.id, userId: req.user.id });
     return res.json(result);
   } catch (error) {
     return res.status(500).json({
@@ -1707,28 +1563,18 @@ app.post("/api/posts/:id/cancel", requireUser, async (req, res) => {
 
     const { data, error } = await supabase
       .from("scheduled_posts")
-      .update({
-        status: "cancelled",
-      })
+      .update({ status: "cancelled" })
       .eq("id", req.params.id)
       .eq("user_id", req.user.id)
       .in("status", ["draft", "scheduled", "failed"])
       .select("*")
       .single();
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
-    return res.json({
-      ok: true,
-      post: data,
-    });
+    return res.json({ ok: true, post: data });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: cleanErrorMessage(error),
-    });
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
   }
 });
 
@@ -1744,48 +1590,25 @@ app.post("/api/cron/publish-due", requireCron, async (req, res) => {
       .eq("status", "scheduled")
       .lte("scheduled_at", new Date().toISOString())
       .lt("attempts", 3)
-      .order("scheduled_at", {
-        ascending: true,
-      })
+      .order("scheduled_at", { ascending: true })
       .limit(Number(process.env.CRON_BATCH_SIZE || 10));
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
     const results = [];
 
     for (const post of posts || []) {
       try {
-        const result = await publishPostById({
-          postId: post.id,
-          userId: null,
-        });
-
-        results.push({
-          post_id: post.id,
-          ok: true,
-          result,
-        });
+        const result = await publishPostById({ postId: post.id, userId: null });
+        results.push({ post_id: post.id, ok: true, result });
       } catch (err) {
-        results.push({
-          post_id: post.id,
-          ok: false,
-          error: cleanErrorMessage(err),
-        });
+        results.push({ post_id: post.id, ok: false, error: cleanErrorMessage(err) });
       }
     }
 
-    return res.json({
-      ok: true,
-      count: results.length,
-      results,
-    });
+    return res.json({ ok: true, count: results.length, results });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: cleanErrorMessage(error),
-    });
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
   }
 });
 
@@ -1794,46 +1617,27 @@ app.post("/api/cron/publish-due", requireCron, async (req, res) => {
 app.get("/api/insights/account", requireUser, async (req, res) => {
   try {
     const accountId = req.query.account_id;
-
     if (!accountId) {
-      return res.status(400).json({
-        ok: false,
-        error: "account_id is required.",
-      });
+      return res.status(400).json({ ok: false, error: "account_id is required." });
     }
 
-    const account = await getAccountForUser({
-      userId: req.user.id,
-      accountId,
-      includeToken: true,
-    });
-
-    const token = await getUsableInstagramToken({
-      account,
-    });
-
+    const account = await getAccountForUser({ userId: req.user.id, accountId, includeToken: true });
+    const token = await getUsableInstagramToken({ account });
     const metrics = String(req.query.metrics || "views,reach,total_interactions")
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean)
       .join(",");
-
     const period = String(req.query.period || "day");
 
-    const url = new URL(
-      `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/insights`
-    );
-
+    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/insights`);
     url.searchParams.set("metric", metrics);
     url.searchParams.set("period", period);
     url.searchParams.set("access_token", token);
 
     const data = await fetchJson(url.toString());
 
-    return res.json({
-      ok: true,
-      insights: data,
-    });
+    return res.json({ ok: true, insights: data });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -1854,15 +1658,10 @@ app.get("/api/posts/:id/insights", requireUser, async (req, res) => {
       .eq("user_id", req.user.id)
       .single();
 
-    if (postError || !post) {
-      throw new Error("Post not found.");
-    }
+    if (postError || !post) throw new Error("Post not found.");
 
     if (!post.published_media_id) {
-      return res.status(400).json({
-        ok: false,
-        error: "Post is not published yet.",
-      });
+      return res.status(400).json({ ok: false, error: "Post is not published yet." });
     }
 
     const account = await getAccountForUser({
@@ -1870,11 +1669,7 @@ app.get("/api/posts/:id/insights", requireUser, async (req, res) => {
       accountId: post.social_account_id,
       includeToken: true,
     });
-
-    const token = await getUsableInstagramToken({
-      account,
-    });
-
+    const token = await getUsableInstagramToken({ account });
     const metrics = String(
       req.query.metrics || "views,reach,total_interactions,likes,comments,shares,saved"
     )
@@ -1883,19 +1678,13 @@ app.get("/api/posts/:id/insights", requireUser, async (req, res) => {
       .filter(Boolean)
       .join(",");
 
-    const url = new URL(
-      `https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/insights`
-    );
-
+    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/insights`);
     url.searchParams.set("metric", metrics);
     url.searchParams.set("access_token", token);
 
     const data = await fetchJson(url.toString());
 
-    return res.json({
-      ok: true,
-      insights: data,
-    });
+    return res.json({ ok: true, insights: data });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -1905,7 +1694,7 @@ app.get("/api/posts/:id/insights", requireUser, async (req, res) => {
   }
 });
 
-/* Comments */
+/* Comments for posts published by this app */
 
 app.get("/api/posts/:id/comments", requireUser, async (req, res) => {
   try {
@@ -1918,15 +1707,10 @@ app.get("/api/posts/:id/comments", requireUser, async (req, res) => {
       .eq("user_id", req.user.id)
       .single();
 
-    if (postError || !post) {
-      throw new Error("Post not found.");
-    }
+    if (postError || !post) throw new Error("Post not found.");
 
     if (!post.published_media_id) {
-      return res.status(400).json({
-        ok: false,
-        error: "Post is not published yet.",
-      });
+      return res.status(400).json({ ok: false, error: "Post is not published yet." });
     }
 
     const account = await getAccountForUser({
@@ -1934,28 +1718,18 @@ app.get("/api/posts/:id/comments", requireUser, async (req, res) => {
       accountId: post.social_account_id,
       includeToken: true,
     });
+    const token = await getUsableInstagramToken({ account });
 
-    const token = await getUsableInstagramToken({
-      account,
-    });
-
-    const url = new URL(
-      `https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/comments`
-    );
-
+    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${post.published_media_id}/comments`);
     url.searchParams.set(
       "fields",
       "id,text,username,timestamp,like_count,replies{id,text,username,timestamp}"
     );
-
     url.searchParams.set("access_token", token);
 
     const data = await fetchJson(url.toString());
 
-    return res.json({
-      ok: true,
-      comments: data,
-    });
+    return res.json({ ok: true, comments: data });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -1968,16 +1742,11 @@ app.get("/api/posts/:id/comments", requireUser, async (req, res) => {
 app.post("/api/posts/:id/comments/:commentId/reply", requireUser, async (req, res) => {
   try {
     const { message } = req.body;
-
     if (!message || !String(message).trim()) {
-      return res.status(400).json({
-        ok: false,
-        error: "message is required.",
-      });
+      return res.status(400).json({ ok: false, error: "message is required." });
     }
 
     const supabase = getSupabaseAdmin();
-
     const { data: post, error: postError } = await supabase
       .from("scheduled_posts")
       .select("*")
@@ -1985,37 +1754,242 @@ app.post("/api/posts/:id/comments/:commentId/reply", requireUser, async (req, re
       .eq("user_id", req.user.id)
       .single();
 
-    if (postError || !post) {
-      throw new Error("Post not found.");
-    }
+    if (postError || !post) throw new Error("Post not found.");
 
     const account = await getAccountForUser({
       userId: req.user.id,
       accountId: post.social_account_id,
       includeToken: true,
     });
-
-    const token = await getUsableInstagramToken({
-      account,
-    });
+    const token = await getUsableInstagramToken({ account });
 
     const url = `https://graph.instagram.com/${graphVersion()}/${req.params.commentId}/replies`;
-
     const params = new URLSearchParams();
-
     params.set("message", String(message));
     params.set("access_token", token);
 
     const data = await fetchJson(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params,
+    });
+
+    return res.json({ ok: true, reply: data });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
+/* Instagram account media and comments - works for all Instagram posts on the account */
+
+app.get("/api/instagram/media", requireUser, async (req, res) => {
+  try {
+    const accountId = req.query.account_id;
+
+    if (!accountId) {
+      return res.status(400).json({ ok: false, error: "account_id is required." });
+    }
+
+    const limit = Math.min(
+      Math.max(Number(req.query.limit || 25), 1),
+      Number(process.env.IG_MEDIA_MAX_LIMIT || 50)
+    );
+
+    const account = await getAccountForUser({ userId: req.user.id, accountId, includeToken: true });
+    const token = await getUsableInstagramToken({ account });
+
+    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/media`);
+    url.searchParams.set(
+      "fields",
+      "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,comments_count,like_count"
+    );
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("access_token", token);
+
+    const data = await fetchJson(url.toString());
+
+    return res.json({
+      ok: true,
+      account_id: account.id,
+      ig_user_id: account.ig_user_id,
+      media: data,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
+app.get("/api/instagram/media/:mediaId/comments", requireUser, async (req, res) => {
+  try {
+    const accountId = req.query.account_id;
+    const mediaId = req.params.mediaId;
+
+    if (!accountId) {
+      return res.status(400).json({ ok: false, error: "account_id is required." });
+    }
+    if (!mediaId) {
+      return res.status(400).json({ ok: false, error: "mediaId is required." });
+    }
+
+    const limit = Math.min(
+      Math.max(Number(req.query.limit || 50), 1),
+      Number(process.env.IG_COMMENTS_MAX_LIMIT || 100)
+    );
+
+    const account = await getAccountForUser({ userId: req.user.id, accountId, includeToken: true });
+    const token = await getUsableInstagramToken({ account });
+
+    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${mediaId}/comments`);
+    url.searchParams.set(
+      "fields",
+      "id,text,username,timestamp,like_count,replies{id,text,username,timestamp}"
+    );
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("access_token", token);
+
+    const data = await fetchJson(url.toString());
+
+    return res.json({
+      ok: true,
+      account_id: account.id,
+      ig_user_id: account.ig_user_id,
+      media_id: mediaId,
+      comments: data,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
+app.get("/api/instagram/comments/all", requireUser, async (req, res) => {
+  try {
+    const accountId = req.query.account_id;
+
+    if (!accountId) {
+      return res.status(400).json({ ok: false, error: "account_id is required." });
+    }
+
+    const mediaLimit = Math.min(
+      Math.max(Number(req.query.media_limit || 25), 1),
+      Number(process.env.IG_MEDIA_MAX_LIMIT || 50)
+    );
+    const commentsLimit = Math.min(
+      Math.max(Number(req.query.comments_limit || 50), 1),
+      Number(process.env.IG_COMMENTS_MAX_LIMIT || 100)
+    );
+
+    const account = await getAccountForUser({ userId: req.user.id, accountId, includeToken: true });
+    const token = await getUsableInstagramToken({ account });
+
+    const mediaUrl = new URL(`https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/media`);
+    mediaUrl.searchParams.set(
+      "fields",
+      "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,comments_count,like_count"
+    );
+    mediaUrl.searchParams.set("limit", String(mediaLimit));
+    mediaUrl.searchParams.set("access_token", token);
+
+    const mediaData = await fetchJson(mediaUrl.toString());
+    const mediaItems = Array.isArray(mediaData?.data) ? mediaData.data : [];
+    const items = [];
+
+    for (const media of mediaItems) {
+      const mediaId = media?.id;
+
+      if (!mediaId) {
+        items.push({ media, comments: [], error: "Media id is missing." });
+        continue;
+      }
+
+      try {
+        const commentsUrl = new URL(`https://graph.instagram.com/${graphVersion()}/${mediaId}/comments`);
+        commentsUrl.searchParams.set(
+          "fields",
+          "id,text,username,timestamp,like_count,replies{id,text,username,timestamp}"
+        );
+        commentsUrl.searchParams.set("limit", String(commentsLimit));
+        commentsUrl.searchParams.set("access_token", token);
+
+        const commentsData = await fetchJson(commentsUrl.toString());
+
+        items.push({
+          media,
+          comments: Array.isArray(commentsData?.data) ? commentsData.data : [],
+          paging: commentsData?.paging || null,
+          error: null,
+        });
+      } catch (commentError) {
+        items.push({
+          media,
+          comments: [],
+          error: cleanErrorMessage(commentError),
+          meta: safeErrorDetails(commentError),
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      account_id: account.id,
+      ig_user_id: account.ig_user_id,
+      media_count: mediaItems.length,
+      items,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
+app.post("/api/instagram/comments/:commentId/reply", requireUser, async (req, res) => {
+  try {
+    const accountId = req.body.account_id || req.body.social_account_id || req.body.accountId;
+    const commentId = req.params.commentId;
+    const message = req.body.message;
+
+    if (!accountId) {
+      return res.status(400).json({ ok: false, error: "account_id is required." });
+    }
+    if (!commentId) {
+      return res.status(400).json({ ok: false, error: "commentId is required." });
+    }
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ ok: false, error: "message is required." });
+    }
+
+    const account = await getAccountForUser({ userId: req.user.id, accountId, includeToken: true });
+    const token = await getUsableInstagramToken({ account });
+
+    const url = `https://graph.instagram.com/${graphVersion()}/${commentId}/replies`;
+    const params = new URLSearchParams();
+    params.set("message", String(message));
+    params.set("access_token", token);
+
+    const data = await fetchJson(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params,
     });
 
     return res.json({
       ok: true,
+      account_id: account.id,
+      comment_id: commentId,
       reply: data,
     });
   } catch (error) {
@@ -2032,42 +2006,24 @@ app.post("/api/posts/:id/comments/:commentId/reply", requireUser, async (req, re
 app.get("/api/messages/conversations", requireUser, async (req, res) => {
   try {
     const accountId = req.query.account_id;
-
     if (!accountId) {
-      return res.status(400).json({
-        ok: false,
-        error: "account_id is required.",
-      });
+      return res.status(400).json({ ok: false, error: "account_id is required." });
     }
 
-    const account = await getAccountForUser({
-      userId: req.user.id,
-      accountId,
-      includeToken: true,
-    });
+    const account = await getAccountForUser({ userId: req.user.id, accountId, includeToken: true });
+    const token = await getUsableInstagramToken({ account });
 
-    const token = await getUsableInstagramToken({
-      account,
-    });
-
-    const url = new URL(
-      `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/conversations`
-    );
-
+    const url = new URL(`https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/conversations`);
     url.searchParams.set(
       "fields",
       "id,participants,updated_time,messages.limit(20){id,from,to,message,created_time}"
     );
-
     url.searchParams.set("platform", "instagram");
     url.searchParams.set("access_token", token);
 
     const data = await fetchJson(url.toString());
 
-    return res.json({
-      ok: true,
-      conversations: data,
-    });
+    return res.json({ ok: true, conversations: data });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -2088,25 +2044,13 @@ app.post("/api/messages/send", requireUser, async (req, res) => {
       });
     }
 
-    const account = await getAccountForUser({
-      userId: req.user.id,
-      accountId: account_id,
-      includeToken: true,
-    });
-
-    const token = await getUsableInstagramToken({
-      account,
-    });
+    const account = await getAccountForUser({ userId: req.user.id, accountId: account_id, includeToken: true });
+    const token = await getUsableInstagramToken({ account });
 
     const url = `https://graph.instagram.com/${graphVersion()}/${account.ig_user_id}/messages`;
-
     const body = {
-      recipient: {
-        id: String(recipient_id),
-      },
-      message: {
-        text: String(message),
-      },
+      recipient: { id: String(recipient_id) },
+      message: { text: String(message) },
     };
 
     const data = await fetchJson(url, {
@@ -2118,10 +2062,7 @@ app.post("/api/messages/send", requireUser, async (req, res) => {
       body: JSON.stringify(body),
     });
 
-    return res.json({
-      ok: true,
-      sent: data,
-    });
+    return res.json({ ok: true, sent: data });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -2141,44 +2082,38 @@ app.get("/api/logs", requireUser, async (req, res) => {
       .from("publish_logs")
       .select("*")
       .eq("user_id", req.user.id)
-      .order("created_at", {
-        ascending: false,
-      })
+      .order("created_at", { ascending: false })
       .limit(Number(req.query.limit || 100));
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
-    return res.json({
-      ok: true,
-      logs: data || [],
-    });
+    return res.json({ ok: true, logs: data || [] });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: cleanErrorMessage(error),
-    });
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
   }
 });
 
 /* Not found and error handlers */
 
 app.use((req, res) => {
+  console.warn("Route not found:", {
+    method: req.method,
+    path: req.path,
+    originalUrl: req.originalUrl,
+  });
+
   res.status(404).json({
     ok: false,
     error: "Route not found.",
+    method: req.method,
     path: req.path,
+    originalUrl: req.originalUrl,
   });
 });
 
 app.use((err, req, res, next) => {
   console.error("Unhandled server error:", cleanErrorMessage(err));
-
-  res.status(500).json({
-    ok: false,
-    error: "Internal server error.",
-  });
+  res.status(500).json({ ok: false, error: "Internal server error." });
 });
 
 app.listen(PORT, () => {
