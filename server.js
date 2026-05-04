@@ -108,11 +108,13 @@ function decryptText(encryptedText) {
   if (parts.length !== 4 || parts[0] !== "v1") {
     throw new Error("Invalid encrypted text format.");
   }
+
   const iv = Buffer.from(parts[1], "base64url");
   const tag = Buffer.from(parts[2], "base64url");
   const encrypted = Buffer.from(parts[3], "base64url");
   const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), iv);
   decipher.setAuthTag(tag);
+
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
 }
 
@@ -127,7 +129,10 @@ function safeErrorDetails(error) {
   return {
     message: cleanErrorMessage(error),
     status: error?.status || null,
-    metaErrorCode: error?.response?.error?.code || null,
+    metaErrorCode:
+      error?.response?.error?.code ||
+      error?.response?.error?.status ||
+      null,
     metaErrorType: error?.response?.error?.type || null,
     metaErrorSubcode: error?.response?.error?.error_subcode || null,
     metaTraceId: error?.response?.error?.fbtrace_id || null,
@@ -201,20 +206,60 @@ async function fetchJson(url, options = {}) {
   }
 }
 
+async function fetchBuffer(url) {
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Failed to download file: HTTP ${response.status}`);
+  }
+
+  return {
+    buffer: Buffer.from(await response.arrayBuffer()),
+    mimetype: response.headers.get("content-type") || "image/jpeg",
+  };
+}
+
+function normalizeSecureUrl(asset) {
+  return asset?.secure_url || asset?.media_url || asset?.url || null;
+}
+
 /* Gemini AI helpers */
 
 function getGeminiApiKey(req) {
   const bodyKey = req.body?.api_key || req.body?.apiKey;
   const headerKey = req.headers["x-gemini-api-key"];
-  const legacyQueryKey = req.query?.api_key || req.query?.apiKey;
   const envKey = process.env.GEMINI_API_KEY;
 
-  return String(bodyKey || headerKey || legacyQueryKey || envKey || "").trim();
+  return String(bodyKey || headerKey || envKey || "").trim();
 }
 
 function normalizeGeminiModel(model) {
-  const value = String(model || process.env.GEMINI_TEXT_MODEL || "gemini-1.5-flash").trim();
+  const value = String(model || "").trim();
+
+  if (!value) {
+    return "";
+  }
+
   return value.startsWith("models/") ? value.slice("models/".length) : value;
+}
+
+function requireGeminiModel(req, res) {
+  const model = normalizeGeminiModel(
+    req.body?.model ||
+      req.body?.text_model ||
+      req.body?.image_model ||
+      req.query?.model
+  );
+
+  if (!model) {
+    res.status(400).json({
+      ok: false,
+      error: "model is required. Select a Gemini model from the app.",
+    });
+    return null;
+  }
+
+  return model;
 }
 
 function extractGeminiText(data) {
@@ -227,6 +272,29 @@ function extractGeminiText(data) {
     .filter(Boolean)
     .join("\n")
     .trim();
+}
+
+function extractGeminiInlineImage(data) {
+  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+
+  for (const candidate of candidates) {
+    const parts = Array.isArray(candidate?.content?.parts)
+      ? candidate.content.parts
+      : [];
+
+    for (const part of parts) {
+      const inlineData = part?.inlineData || part?.inline_data;
+
+      if (inlineData?.data) {
+        return {
+          buffer: Buffer.from(inlineData.data, "base64"),
+          mimetype: inlineData.mimeType || inlineData.mime_type || "image/png",
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 function missingGeminiKeyResponse(res) {
@@ -246,6 +314,11 @@ async function fetchGeminiModels(apiKey) {
 
 async function generateGeminiText({ apiKey, model, prompt }) {
   const normalizedModel = normalizeGeminiModel(model);
+
+  if (!normalizedModel) {
+    throw new Error("model is required.");
+  }
+
   const url = new URL(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       normalizedModel
@@ -272,6 +345,94 @@ async function generateGeminiText({ apiKey, model, prompt }) {
       ],
     }),
   });
+}
+
+async function generateGeminiImage({ apiKey, model, prompt, imageBuffer, imageMimeType }) {
+  const normalizedModel = normalizeGeminiModel(model);
+
+  if (!normalizedModel) {
+    throw new Error("model is required.");
+  }
+
+  const url = new URL(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      normalizedModel
+    )}:generateContent`
+  );
+
+  url.searchParams.set("key", apiKey);
+
+  const parts = [
+    {
+      text: String(prompt || ""),
+    },
+  ];
+
+  if (imageBuffer) {
+    parts.push({
+      inline_data: {
+        mime_type: imageMimeType || "image/jpeg",
+        data: imageBuffer.toString("base64"),
+      },
+    });
+  }
+
+  return fetchJson(url.toString(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts,
+        },
+      ],
+      generationConfig: {
+        responseModalities: ["TEXT", "IMAGE"],
+      },
+    }),
+  });
+}
+
+function buildImageEditPrompt({
+  prompt,
+  aspectRatio,
+  resolution,
+  preserveProduct,
+  preservePlanter,
+}) {
+  const lines = [];
+
+  lines.push(String(prompt || "").trim());
+  lines.push("Edit the provided image according to the instruction.");
+  lines.push("Return the edited image as the main result.");
+
+  if (aspectRatio) {
+    lines.push(`Requested aspect ratio: ${aspectRatio}.`);
+  }
+
+  if (resolution) {
+    lines.push(`Requested resolution: ${resolution}.`);
+  }
+
+  if (preserveProduct) {
+    lines.push(
+      "Preserve the main product exactly. Do not change the tree/product shape, leaves, trunk, color, density, size, or identity."
+    );
+  }
+
+  if (preservePlanter) {
+    lines.push(
+      "Preserve the planter/pot exactly. Do not change the pot shape, stones, material, color, size, texture, or details."
+    );
+  }
+
+  lines.push("Do not add text, logos, watermarks, labels, UI, or random objects.");
+  lines.push("Make the output realistic, clean, and commercially usable.");
+
+  return lines.filter(Boolean).join("\n");
 }
 
 async function requireUser(req, res, next) {
@@ -356,6 +517,23 @@ async function getAccountForUser({ userId, accountId, includeToken = false }) {
   return data;
 }
 
+async function getMediaAssetForUser({ userId, mediaAssetId }) {
+  const supabase = getSupabaseAdmin();
+
+  const { data, error } = await supabase
+    .from("media_assets")
+    .select("*")
+    .eq("id", mediaAssetId)
+    .eq("user_id", userId)
+    .single();
+
+  if (error || !data) {
+    throw new Error("Media asset not found for this user.");
+  }
+
+  return data;
+}
+
 async function addPublishLog({
   userId,
   postId = null,
@@ -381,11 +559,17 @@ async function addPublishLog({
   }
 }
 
-async function uploadBufferToCloudinary({ buffer, mimetype, originalname, userId }) {
+async function uploadBufferToCloudinary({
+  buffer,
+  mimetype,
+  originalname,
+  userId,
+  folderSuffix = "",
+}) {
   configureCloudinary();
 
   const assetId = crypto.randomUUID();
-  const folder = `socialflow/${userId}`;
+  const folder = `socialflow/${userId}${folderSuffix ? `/${folderSuffix}` : ""}`;
   const resourceType = mimetype?.startsWith("video/") ? "video" : "image";
 
   return new Promise((resolve, reject) => {
@@ -409,6 +593,44 @@ async function uploadBufferToCloudinary({ buffer, mimetype, originalname, userId
 
     stream.end(buffer);
   });
+}
+
+async function saveMediaAssetFromBuffer({
+  userId,
+  buffer,
+  mimetype,
+  originalname,
+  folderSuffix = "",
+}) {
+  const uploaded = await uploadBufferToCloudinary({
+    buffer,
+    mimetype,
+    originalname,
+    userId,
+    folderSuffix,
+  });
+
+  const r = uploaded.result;
+  const supabase = getSupabaseAdmin();
+
+  const { data, error } = await supabase
+    .from("media_assets")
+    .insert({
+      user_id: userId,
+      cloudinary_public_id: r.public_id,
+      media_url: r.secure_url,
+      secure_url: r.secure_url,
+      resource_type: r.resource_type,
+      original_filename: originalname,
+      bytes: r.bytes || buffer.length || null,
+      format: r.format || null,
+    })
+    .select("*")
+    .single();
+
+  if (error) throw new Error(error.message);
+
+  return data;
 }
 
 /* Instagram OAuth helpers */
@@ -977,7 +1199,7 @@ app.get("/privacy", (req, res) => {
       `
       <h1>Privacy Policy</h1>
       <p>SocialFlow lets users connect their Instagram professional accounts only after authorization.</p>
-      <p>We store connected Instagram account data, scheduled posts, uploaded media URLs, captions, publishing status, logs, comments, messages, and insights only as needed to provide the service.</p>
+      <p>We store connected Instagram account data, scheduled posts, uploaded media URLs, captions, publishing status, logs, comments, messages, insights, generated media, and edit history only as needed to provide the service.</p>
       <p>Each customer account is stored separately and linked to that customer's authenticated user ID.</p>
       <p>Access tokens are encrypted on the backend. We do not expose tokens or server secrets to the mobile app.</p>
       <p>Users can request deletion of their account data through the data deletion page.</p>
@@ -992,10 +1214,10 @@ app.get("/terms", (req, res) => {
       "Terms of Service - SocialFlow",
       `
       <h1>Terms of Service</h1>
-      <p>Users are responsible for all content they upload, schedule, publish, or send through SocialFlow.</p>
+      <p>Users are responsible for all content they upload, generate, edit, schedule, publish, or send through SocialFlow.</p>
       <p>Users must only publish content they own or have permission to use.</p>
-      <p>Users must comply with Instagram, Meta, and applicable laws and policies.</p>
-      <p>SocialFlow depends on third-party APIs. Publishing, comments, messages, and insights can fail if third-party APIs reject or limit requests.</p>
+      <p>Users must comply with Instagram, Meta, Gemini, Cloudinary, and applicable laws and policies.</p>
+      <p>SocialFlow depends on third-party APIs. Publishing, comments, messages, AI generation, and insights can fail if third-party APIs reject or limit requests.</p>
     `
     )
   );
@@ -1007,7 +1229,7 @@ app.get("/data-deletion", (req, res) => {
       "Data Deletion - SocialFlow",
       `
       <h1>User Data Deletion</h1>
-      <p>Users can request deletion of their account data, connected Instagram account data, scheduled posts, media URLs, publishing logs, comments, messages, and insights data.</p>
+      <p>Users can request deletion of their account data, connected Instagram account data, scheduled posts, media URLs, generated media, publishing logs, comments, messages, and insights data.</p>
       <p>To request deletion, contact the app owner using the email associated with your account.</p>
       <p>After verification, we will delete related data unless retention is required for legal, security, or fraud-prevention reasons.</p>
     `
@@ -1383,6 +1605,54 @@ app.delete("/api/accounts/:id", requireUser, async (req, res) => {
 
 /* Media */
 
+app.get("/api/media/assets", requireUser, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit || 100), 1), 300);
+    const supabase = getSupabaseAdmin();
+
+    const { data, error } = await supabase
+      .from("media_assets")
+      .select("*")
+      .eq("user_id", req.user.id)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) throw new Error(error.message);
+
+    return res.json({
+      ok: true,
+      assets: data || [],
+      media: data || [],
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
+  }
+});
+
+app.get("/api/media", requireUser, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit || 100), 1), 300);
+    const supabase = getSupabaseAdmin();
+
+    const { data, error } = await supabase
+      .from("media_assets")
+      .select("*")
+      .eq("user_id", req.user.id)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) throw new Error(error.message);
+
+    return res.json({
+      ok: true,
+      assets: data || [],
+      media: data || [],
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: cleanErrorMessage(error) });
+  }
+});
+
 app.post("/api/media/upload", requireUser, upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -1394,32 +1664,13 @@ app.post("/api/media/upload", requireUser, upload.single("file"), async (req, re
       return res.status(400).json({ ok: false, error: "Only image and video files are allowed." });
     }
 
-    const uploaded = await uploadBufferToCloudinary({
+    const data = await saveMediaAssetFromBuffer({
+      userId: req.user.id,
       buffer: req.file.buffer,
       mimetype: req.file.mimetype,
       originalname: req.file.originalname,
-      userId: req.user.id,
+      folderSuffix: "uploads",
     });
-
-    const r = uploaded.result;
-    const supabase = getSupabaseAdmin();
-
-    const { data, error } = await supabase
-      .from("media_assets")
-      .insert({
-        user_id: req.user.id,
-        cloudinary_public_id: r.public_id,
-        media_url: r.secure_url,
-        secure_url: r.secure_url,
-        resource_type: r.resource_type,
-        original_filename: req.file.originalname,
-        bytes: r.bytes || null,
-        format: r.format || null,
-      })
-      .select("*")
-      .single();
-
-    if (error) throw new Error(error.message);
 
     return res.json({ ok: true, asset: data });
   } catch (error) {
@@ -1511,33 +1762,21 @@ app.post("/api/posts/schedule", requireUser, async (req, res) => {
       includeToken: false,
     });
 
-    const supabase = getSupabaseAdmin();
-
-    const { data: asset, error: assetError } = await supabase
-      .from("media_assets")
-      .select("*")
-      .eq("id", media_asset_id)
-      .eq("user_id", req.user.id)
-      .single();
-
-    if (assetError || !asset) {
-      return res.status(400).json({
-        ok: false,
-        error: "Media asset not found for this user.",
-        media_asset_id,
-      });
-    }
+    const asset = await getMediaAssetForUser({
+      userId: req.user.id,
+      mediaAssetId: media_asset_id,
+    });
 
     const detectedMediaType = media_type || (asset.resource_type === "video" ? "video" : "image");
 
-    const { data, error } = await supabase
+    const { data, error } = await getSupabaseAdmin()
       .from("scheduled_posts")
       .insert({
         user_id: req.user.id,
         social_account_id: account.id,
         media_asset_id: asset.id,
         caption: caption || "",
-        media_url: asset.secure_url,
+        media_url: normalizeSecureUrl(asset),
         media_type: detectedMediaType,
         scheduled_at,
         timezone: timezone || "Asia/Dubai",
@@ -1574,16 +1813,10 @@ app.post("/api/posts/publish-now", requireUser, async (req, res) => {
         includeToken: false,
       });
 
-      const { data: asset, error: assetError } = await supabase
-        .from("media_assets")
-        .select("*")
-        .eq("id", media_asset_id)
-        .eq("user_id", req.user.id)
-        .single();
-
-      if (assetError || !asset) {
-        throw new Error("Media asset not found for this user.");
-      }
+      const asset = await getMediaAssetForUser({
+        userId: req.user.id,
+        mediaAssetId: media_asset_id,
+      });
 
       const detectedMediaType = media_type || (asset.resource_type === "video" ? "video" : "image");
 
@@ -1594,7 +1827,7 @@ app.post("/api/posts/publish-now", requireUser, async (req, res) => {
           social_account_id: account.id,
           media_asset_id: asset.id,
           caption: caption || "",
-          media_url: asset.secure_url,
+          media_url: normalizeSecureUrl(asset),
           media_type: detectedMediaType,
           scheduled_at: null,
           timezone: "Asia/Dubai",
@@ -1858,7 +2091,7 @@ app.post("/api/posts/:id/comments/:commentId/reply", requireUser, async (req, re
   }
 });
 
-/* Instagram account media and comments - works for all Instagram posts on the account */
+/* Instagram account media and comments */
 
 app.get("/api/instagram/media", requireUser, async (req, res) => {
   try {
@@ -2162,7 +2395,7 @@ app.get("/api/ai/models", requireUser, async (req, res) => {
     return res.json({
       ok: true,
       provider: "gemini",
-      using_backend_key: !req.headers["x-gemini-api-key"] && !req.query?.api_key && !req.query?.apiKey,
+      using_backend_key: !req.headers["x-gemini-api-key"],
       models,
     });
   } catch (error) {
@@ -2182,7 +2415,9 @@ app.post("/api/ai/test", requireUser, async (req, res) => {
       return missingGeminiKeyResponse(res);
     }
 
-    const model = normalizeGeminiModel(req.body?.model || req.body?.text_model);
+    const model = requireGeminiModel(req, res);
+    if (!model) return;
+
     const data = await generateGeminiText({
       apiKey,
       model,
@@ -2216,6 +2451,9 @@ app.post("/api/ai/generate", requireUser, async (req, res) => {
       return missingGeminiKeyResponse(res);
     }
 
+    const model = requireGeminiModel(req, res);
+    if (!model) return;
+
     const prompt = req.body?.prompt;
 
     if (!prompt || !String(prompt).trim()) {
@@ -2225,7 +2463,6 @@ app.post("/api/ai/generate", requireUser, async (req, res) => {
       });
     }
 
-    const model = normalizeGeminiModel(req.body?.model || req.body?.text_model);
     const data = await generateGeminiText({
       apiKey,
       model,
@@ -2249,6 +2486,195 @@ app.post("/api/ai/generate", requireUser, async (req, res) => {
     });
   }
 });
+
+async function handleAiImageEdit(req, res) {
+  try {
+    const apiKey = getGeminiApiKey(req);
+
+    if (!apiKey) {
+      return missingGeminiKeyResponse(res);
+    }
+
+    const model = requireGeminiModel(req, res);
+    if (!model) return;
+
+    const prompt =
+      req.body?.prompt ||
+      req.body?.edit_prompt ||
+      req.body?.instruction;
+
+    if (!prompt || !String(prompt).trim()) {
+      return res.status(400).json({
+        ok: false,
+        error: "prompt is required.",
+      });
+    }
+
+    let imageBuffer = null;
+    let imageMimeType = "image/jpeg";
+
+    if (req.file?.buffer) {
+      imageBuffer = req.file.buffer;
+      imageMimeType = req.file.mimetype || "image/jpeg";
+    } else if (req.body?.media_asset_id || req.body?.mediaAssetId) {
+      const mediaAssetId = req.body.media_asset_id || req.body.mediaAssetId;
+      const asset = await getMediaAssetForUser({
+        userId: req.user.id,
+        mediaAssetId,
+      });
+
+      const url = normalizeSecureUrl(asset);
+
+      if (!url) {
+        throw new Error("Media asset has no usable URL.");
+      }
+
+      const downloaded = await fetchBuffer(url);
+      imageBuffer = downloaded.buffer;
+      imageMimeType = downloaded.mimetype;
+    } else if (req.body?.image_url || req.body?.imageUrl) {
+      const downloaded = await fetchBuffer(req.body.image_url || req.body.imageUrl);
+      imageBuffer = downloaded.buffer;
+      imageMimeType = downloaded.mimetype;
+    } else {
+      return res.status(400).json({
+        ok: false,
+        error: "file, image_url, or media_asset_id is required.",
+      });
+    }
+
+    const finalPrompt = buildImageEditPrompt({
+      prompt,
+      aspectRatio: req.body?.aspect_ratio || req.body?.aspectRatio,
+      resolution: req.body?.resolution,
+      preserveProduct:
+        req.body?.preserve_product === true ||
+        req.body?.preserveProduct === true ||
+        String(req.body?.preserve_product).toLowerCase() === "true" ||
+        String(req.body?.preserveProduct).toLowerCase() === "true",
+      preservePlanter:
+        req.body?.preserve_planter === true ||
+        req.body?.preservePlanter === true ||
+        String(req.body?.preserve_planter).toLowerCase() === "true" ||
+        String(req.body?.preservePlanter).toLowerCase() === "true",
+    });
+
+    const result = await generateGeminiImage({
+      apiKey,
+      model,
+      prompt: finalPrompt,
+      imageBuffer,
+      imageMimeType,
+    });
+
+    const image = extractGeminiInlineImage(result);
+    const text = extractGeminiText(result);
+
+    if (!image?.buffer?.length) {
+      return res.status(502).json({
+        ok: false,
+        error:
+          text ||
+          "The selected Gemini model did not return an image. Select an image-capable model from the app.",
+        model,
+      });
+    }
+
+    const asset = await saveMediaAssetFromBuffer({
+      userId: req.user.id,
+      buffer: image.buffer,
+      mimetype: image.mimetype,
+      originalname: `ai-edited-${Date.now()}.png`,
+      folderSuffix: "ai-edits",
+    });
+
+    return res.json({
+      ok: true,
+      provider: "gemini",
+      model,
+      asset,
+      message: "Edited image saved to your library.",
+      text,
+    });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+}
+
+async function handleAiImageGenerate(req, res) {
+  try {
+    const apiKey = getGeminiApiKey(req);
+
+    if (!apiKey) {
+      return missingGeminiKeyResponse(res);
+    }
+
+    const model = requireGeminiModel(req, res);
+    if (!model) return;
+
+    const prompt = req.body?.prompt;
+
+    if (!prompt || !String(prompt).trim()) {
+      return res.status(400).json({
+        ok: false,
+        error: "prompt is required.",
+      });
+    }
+
+    const result = await generateGeminiImage({
+      apiKey,
+      model,
+      prompt,
+      imageBuffer: null,
+      imageMimeType: null,
+    });
+
+    const image = extractGeminiInlineImage(result);
+    const text = extractGeminiText(result);
+
+    if (!image?.buffer?.length) {
+      return res.status(502).json({
+        ok: false,
+        error:
+          text ||
+          "The selected Gemini model did not return an image. Select an image-capable model from the app.",
+        model,
+      });
+    }
+
+    const asset = await saveMediaAssetFromBuffer({
+      userId: req.user.id,
+      buffer: image.buffer,
+      mimetype: image.mimetype,
+      originalname: `ai-generated-${Date.now()}.png`,
+      folderSuffix: "ai-generated",
+    });
+
+    return res.json({
+      ok: true,
+      provider: "gemini",
+      model,
+      asset,
+      message: "Generated image saved to your library.",
+      text,
+    });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+}
+
+app.post("/api/ai/image/edit", requireUser, upload.single("file"), handleAiImageEdit);
+app.post("/api/ai/edit-image", requireUser, upload.single("file"), handleAiImageEdit);
+app.post("/api/image/edit", requireUser, upload.single("file"), handleAiImageEdit);
+app.post("/api/ai/image/generate", requireUser, handleAiImageGenerate);
 
 /* Logs */
 
