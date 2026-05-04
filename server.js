@@ -1153,11 +1153,40 @@ async function publishPostById({ postId, userId = null }) {
 /* Public routes */
 
 app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    service: "socialflow-api",
-    message: "SocialFlow API is running.",
-  });
+  res.send(
+    htmlPage(
+      "SocialFlow",
+      `
+      <h1>SocialFlow</h1>
+      <p>
+        SocialFlow is a social media management and scheduling platform for Instagram professional accounts.
+      </p>
+      <p>
+        Users can connect their Instagram professional account, upload media, schedule posts, publish content,
+        manage comments and messages, and review insights from one dashboard.
+      </p>
+
+      <h2>Reviewer Information</h2>
+      <p>
+        This URL is the official backend and web information page for the SocialFlow application.
+        The app uses this server for Instagram OAuth, publishing, media upload, comments, messages,
+        insights, AI features, and data deletion pages.
+      </p>
+
+      <ul>
+        <li><a href="/privacy">Privacy Policy</a></li>
+        <li><a href="/terms">Terms of Service</a></li>
+        <li><a href="/data-deletion">Data Deletion Instructions</a></li>
+        <li><a href="/api/health">API Health Check</a></li>
+      </ul>
+
+      <p>
+        Platform Data is only used to provide app functionality to the authenticated user who connected
+        their own Instagram professional account. Platform Data is not sold and is not used for third-party advertising.
+      </p>
+      `
+    )
+  );
 });
 
 app.get("/api/health", (req, res) => {
