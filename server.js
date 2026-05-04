@@ -1678,6 +1678,106 @@ app.post("/api/media/upload", requireUser, upload.single("file"), async (req, re
   }
 });
 
+app.delete("/api/media/:id", requireUser, async (req, res) => {
+  try {
+    const mediaId = req.params.id;
+    const supabase = getSupabaseAdmin();
+
+    const { data: asset, error: assetError } = await supabase
+      .from("media_assets")
+      .select("*")
+      .eq("id", mediaId)
+      .eq("user_id", req.user.id)
+      .single();
+
+    if (assetError || !asset) {
+      return res.status(404).json({
+        ok: false,
+        error: "Media asset not found for this user.",
+      });
+    }
+
+    // مهم:
+    // هون بس منعرف إذا الصورة مستخدمة ببوستات.
+    // ما منحذف ولا منعدل أي بوست منشور أو مجدول.
+    const { data: linkedPosts, error: linkedPostsError } = await supabase
+      .from("scheduled_posts")
+      .select("id,status,published_media_id,published_permalink")
+      .eq("media_asset_id", mediaId)
+      .eq("user_id", req.user.id);
+
+    if (linkedPostsError) {
+      throw new Error(linkedPostsError.message);
+    }
+
+    let cloudinaryDeleted = false;
+    let cloudinaryResult = null;
+
+    if (asset.cloudinary_public_id) {
+      configureCloudinary();
+
+      const resourceType =
+        asset.resource_type === "video" || asset.resource_type === "raw"
+          ? asset.resource_type
+          : "image";
+
+      cloudinaryResult = await cloudinary.uploader.destroy(
+        asset.cloudinary_public_id,
+        {
+          resource_type: resourceType,
+          invalidate: true,
+        }
+      );
+
+      cloudinaryDeleted =
+        cloudinaryResult?.result === "ok" ||
+        cloudinaryResult?.result === "not found";
+
+      if (!cloudinaryDeleted) {
+        return res.status(500).json({
+          ok: false,
+          error: "Failed to delete media from Cloudinary.",
+          cloudinary_result: cloudinaryResult,
+        });
+      }
+    }
+
+    // حذف الصورة من مكتبة المستخدم فقط.
+    // لا نحذف scheduled_posts.
+    // لا نحذف أي بوست من Instagram.
+    const { error: deleteError } = await supabase
+      .from("media_assets")
+      .delete()
+      .eq("id", mediaId)
+      .eq("user_id", req.user.id);
+
+    if (deleteError) {
+      throw new Error(deleteError.message);
+    }
+
+    return res.json({
+      ok: true,
+      deleted: true,
+      media_id: mediaId,
+      cloudinary_public_id: asset.cloudinary_public_id || null,
+      cloudinary_deleted: Boolean(asset.cloudinary_public_id)
+        ? cloudinaryDeleted
+        : false,
+      cloudinary_result: cloudinaryResult,
+      linked_posts_count: Array.isArray(linkedPosts) ? linkedPosts.length : 0,
+      linked_posts_untouched: true,
+      message:
+        "Media deleted from this user's library and Cloudinary. Existing posts were not deleted or modified.",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: cleanErrorMessage(error),
+      meta: safeErrorDetails(error),
+    });
+  }
+});
+
 /* Posts */
 
 app.get("/api/posts", requireUser, async (req, res) => {
