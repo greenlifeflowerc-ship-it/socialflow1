@@ -33,9 +33,10 @@ export const config = {
 
   platforms: {
     facebook: {
-      appId: process.env.FB_APP_ID || '',
-      appSecret: process.env.FB_APP_SECRET || '',
-      apiVersion: process.env.FB_API_VERSION || 'v21.0',
+      // Accept both the new names and the legacy INSTAGRAM_*/META_* names.
+      appId: process.env.FB_APP_ID || process.env.INSTAGRAM_APP_ID || process.env.META_APP_ID || '',
+      appSecret: process.env.FB_APP_SECRET || process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET || '',
+      apiVersion: process.env.FB_API_VERSION || process.env.META_GRAPH_VERSION || 'v21.0',
     },
     pinterest: {
       appId: process.env.PINTEREST_APP_ID || '',

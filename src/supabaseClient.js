@@ -28,7 +28,10 @@ export const admin = createClient(url, serviceKey, {
  */
 export async function getUserFromToken(accessToken) {
   if (!accessToken) return null;
-  const client = createClient(config.supabase.url, config.supabase.anonKey, {
+  // Validating a user JWT needs any valid project key; fall back to the
+  // service-role key when SUPABASE_ANON_KEY isn't configured on the server.
+  const key = config.supabase.anonKey || config.supabase.serviceRoleKey;
+  const client = createClient(config.supabase.url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
   });
