@@ -1,0 +1,58 @@
+# Render Blueprint for the Schudlaaa server (this repo = the server, at root).
+# If your Render service is configured manually, set in its dashboard:
+#   Build Command:  npm install
+#   Start Command:  node src/index.js   (or: npm start)
+#   Root Directory: (leave empty)
+services:
+  - type: web
+    name: socialflow1
+    runtime: node
+    # 'free' sleeps after inactivity (OAuth + publish-now still work, they wake it).
+    # Bump to 'starter' for an always-on minute-by-minute scheduler.
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: SCHEDULER_ENABLED
+        value: "true"
+      - key: FB_API_VERSION
+        value: v25.0
+      # PUBLIC_BASE_URL is derived from RENDER_EXTERNAL_URL automatically.
+      # Set the rest as secrets in the Render dashboard (do not commit real values):
+      - key: APP_RETURN_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: FB_APP_ID
+        sync: false
+      - key: FB_APP_SECRET
+        sync: false
+      - key: PINTEREST_APP_ID
+        sync: false
+      - key: PINTEREST_APP_SECRET
+        sync: false
+      - key: TWITTER_CLIENT_ID
+        sync: false
+      - key: TWITTER_CLIENT_SECRET
+        sync: false
+      - key: TIKTOK_CLIENT_KEY
+        sync: false
+      - key: TIKTOK_CLIENT_SECRET
+        sync: false
