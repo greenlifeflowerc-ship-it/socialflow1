@@ -92,11 +92,9 @@ oauthRouter.get('/:platform/start', requireUser, async (req, res) => {
   res.json({ url });
 });
 
-// GET /oauth/:provider/callback — the provider redirects the browser here.
-// Identity + PKCE verifier are recovered from the encrypted state, so no
-// session storage is needed.
-oauthRouter.get('/:provider/callback', async (req, res) => {
-  const providerName = req.params.provider;
+// The provider redirects the browser here. Identity + PKCE verifier are
+// recovered from the encrypted state, so no session storage is needed.
+async function handleCallback(providerName, req, res) {
   const { code, state, error: oauthError, error_description } = req.query;
   try {
     if (oauthError) throw new Error(error_description || oauthError);
@@ -122,4 +120,11 @@ oauthRouter.get('/:provider/callback', async (req, res) => {
     console.error('oauth callback error:', e.message);
     res.redirect(appReturn({ error: String(e.message || e).slice(0, 200) }));
   }
-});
+}
+
+oauthRouter.get('/:provider/callback', (req, res) => handleCallback(req.params.provider, req, res));
+
+// Instagram's whitelisted redirect path lives outside /oauth (see redirectUriFor).
+export function instagramCallbackHandler(req, res) {
+  return handleCallback('instagram', req, res);
+}

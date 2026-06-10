@@ -18,6 +18,9 @@ export function getProvider(platform) {
 
 // redirect_uri is per-provider; register this exact URL in each platform app.
 export function redirectUriFor(provider) {
+  // Instagram: reuse the path already whitelisted in the Meta app
+  // (/api/auth/instagram/callback) so no Meta change is needed.
+  if (provider === 'instagram') return `${config.publicBaseUrl}/api/auth/instagram/callback`;
   return `${config.publicBaseUrl}/oauth/${provider}/callback`;
 }
 

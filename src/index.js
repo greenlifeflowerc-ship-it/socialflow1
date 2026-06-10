@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { config, cloudinaryConfigured, platformConfigured } from './config.js';
-import { oauthRouter } from './routes/oauth.js';
+import { oauthRouter, instagramCallbackHandler } from './routes/oauth.js';
 import { mediaRouter } from './routes/media.js';
 import { postsRouter, internalRouter } from './routes/posts.js';
 import { startScheduler } from './scheduler.js';
@@ -16,7 +16,7 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/status', (_req, res) => {
   res.json({
     service: 'schudlaaa-server',
-    rev: 'r4-ig-diag',
+    rev: 'r5-ig-callback',
     ok: true,
     scheduler: config.scheduler.enabled ? 'in-process' : 'external',
     cloudinary: cloudinaryConfigured(),
@@ -29,6 +29,8 @@ app.get('/status', (_req, res) => {
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use('/oauth', oauthRouter);
+// Instagram's redirect uses a path already whitelisted in the Meta app.
+app.get('/api/auth/instagram/callback', instagramCallbackHandler);
 app.use('/media', mediaRouter);
 app.use('/posts', postsRouter);
 app.use('/internal', internalRouter);
