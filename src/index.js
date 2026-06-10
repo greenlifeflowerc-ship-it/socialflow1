@@ -6,12 +6,14 @@ import { mediaRouter } from './routes/media.js';
 import { postsRouter, internalRouter } from './routes/posts.js';
 import { startScheduler } from './scheduler.js';
 import { CONNECTABLE } from './oauth/index.js';
+import { pagesRouter } from './routes/pages.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
-app.get('/', (_req, res) => {
+// Machine-readable status (for debugging / monitoring).
+app.get('/status', (_req, res) => {
   res.json({
     service: 'schudlaaa-server',
     ok: true,
@@ -26,6 +28,9 @@ app.use('/oauth', oauthRouter);
 app.use('/media', mediaRouter);
 app.use('/posts', postsRouter);
 app.use('/internal', internalRouter);
+
+// Public info + legal pages (/, /privacy, /terms, /data-deletion, /api/health).
+app.use('/', pagesRouter);
 
 app.use((err, _req, res, _next) => {
   console.error('unhandled error:', err);
