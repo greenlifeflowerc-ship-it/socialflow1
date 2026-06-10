@@ -24,8 +24,14 @@ export const facebook = {
       redirect_uri: redirectUri,
       state,
       response_type: 'code',
-      scope: SCOPES.join(','),
     });
+    // Facebook Login for Business uses config_id (the configuration defines the
+    // permissions); classic Facebook Login uses scope.
+    if (config.platforms.facebook.loginConfigId) {
+      p.set('config_id', config.platforms.facebook.loginConfigId);
+    } else {
+      p.set('scope', SCOPES.join(','));
+    }
     return `https://www.facebook.com/${v()}/dialog/oauth?${p.toString()}`;
   },
 
