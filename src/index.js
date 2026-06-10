@@ -16,13 +16,14 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/status', (_req, res) => {
   res.json({
     service: 'schudlaaa-server',
-    rev: 'r6-fb-business',
+    rev: 'r7-fb-config',
     ok: true,
     scheduler: config.scheduler.enabled ? 'in-process' : 'external',
     cloudinary: cloudinaryConfigured(),
-    // app IDs are public (they appear in OAuth URLs) — exposed for diagnostics
+    // app IDs / config id are public (they appear in OAuth URLs) — for diagnostics
     igAppId: config.platforms.instagram.appId || null,
     fbAppId: config.platforms.facebook.appId || null,
+    fbConfigId: config.platforms.facebook.loginConfigId || null,
     platforms: Object.fromEntries(CONNECTABLE.map((p) => [p, platformConfigured(p) ? 'live' : 'sandbox'])),
   });
 });
