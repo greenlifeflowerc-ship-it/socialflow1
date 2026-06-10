@@ -64,8 +64,8 @@ async function postFirstComment(account, tokens, platformPostId, text) {
         body: new URLSearchParams({ message: text, access_token: tokens.accessToken }),
       });
     } else if (account.platform === 'instagram') {
-      const v = config.platforms.facebook.apiVersion;
-      await fetch(`https://graph.facebook.com/${v}/${platformPostId}/comments`, {
+      const v = config.platforms.instagram.graphVersion;
+      await fetch(`https://graph.instagram.com/${v}/${platformPostId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ message: text, access_token: tokens.accessToken }),

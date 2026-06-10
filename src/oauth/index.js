@@ -1,13 +1,14 @@
 import { config, platformConfigured } from '../config.js';
 import { encrypt, decrypt, randomUrlSafe, sha256Base64Url } from '../crypto.js';
 import { facebook } from './facebook.js';
+import { instagram } from './instagram.js';
 import { pinterest } from './pinterest.js';
 import { twitter } from './twitter.js';
 import { tiktok } from './tiktok.js';
 
-// Provider that handles each connectable platform. Instagram is connected via
-// the Facebook (Meta) flow, so it maps to the same provider.
-const PROVIDERS = { facebook, instagram: facebook, pinterest, twitter, tiktok };
+// Provider per connectable platform. Instagram uses the Instagram Login flow
+// (its own app id/secret), separate from the Facebook (Meta) flow.
+const PROVIDERS = { facebook, instagram, pinterest, twitter, tiktok };
 
 export const CONNECTABLE = ['facebook', 'instagram', 'pinterest', 'twitter', 'tiktok'];
 

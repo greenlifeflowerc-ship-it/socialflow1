@@ -33,10 +33,16 @@ export const config = {
 
   platforms: {
     facebook: {
-      // Accept both the new names and the legacy INSTAGRAM_*/META_* names.
-      appId: process.env.FB_APP_ID || process.env.INSTAGRAM_APP_ID || process.env.META_APP_ID || '',
-      appSecret: process.env.FB_APP_SECRET || process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET || '',
+      appId: process.env.FB_APP_ID || process.env.META_APP_ID || '',
+      appSecret: process.env.FB_APP_SECRET || process.env.META_APP_SECRET || '',
       apiVersion: process.env.FB_API_VERSION || process.env.META_GRAPH_VERSION || 'v21.0',
+    },
+    // Instagram API with Instagram Login — its own app id/secret.
+    instagram: {
+      appId: process.env.INSTAGRAM_APP_ID || '',
+      appSecret: process.env.INSTAGRAM_APP_SECRET || '',
+      scopes: process.env.INSTAGRAM_SCOPES || '',
+      graphVersion: process.env.IG_GRAPH_VERSION || process.env.META_GRAPH_VERSION || 'v21.0',
     },
     pinterest: {
       appId: process.env.PINTEREST_APP_ID || '',
@@ -55,11 +61,13 @@ export const config = {
 
 /** True when a platform has real OAuth credentials configured. */
 export function platformConfigured(platform) {
-  // Instagram is driven by the Meta (Facebook) app, so check FB creds first —
-  // there is no separate `config.platforms.instagram` entry.
-  if (platform === 'facebook' || platform === 'instagram') {
+  if (platform === 'facebook') {
     const fb = config.platforms.facebook;
     return !!(fb.appId && fb.appSecret);
+  }
+  if (platform === 'instagram') {
+    const ig = config.platforms.instagram;
+    return !!(ig.appId && ig.appSecret);
   }
   const p = config.platforms[platform];
   if (!p) return false;

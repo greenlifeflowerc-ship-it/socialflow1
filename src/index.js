@@ -16,7 +16,7 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/status', (_req, res) => {
   res.json({
     service: 'schudlaaa-server',
-    rev: 'r2-legacy-env',
+    rev: 'r3-ig-login',
     ok: true,
     scheduler: config.scheduler.enabled ? 'in-process' : 'external',
     cloudinary: cloudinaryConfigured(),
